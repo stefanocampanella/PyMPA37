@@ -1,0 +1,13 @@
+name: PyMPA37
+channels:
+  - conda-forge
+dependencies:
+  - python < 3.9
+  - pip
+  - numpy
+  - scipy
+  - pandas >= 1.1.0
+  - matplotlib
+  - dask
+  - numba
+  - obspy
