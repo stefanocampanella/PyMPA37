@@ -97,42 +97,39 @@ def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
     temp_file = f"{itemp}.{nn}.{ss}..{ich}.mseed"
     finpt = f"{temp_dir}{temp_file}"
     if os.path.isfile(finpt):
-        try:
-            tsize = os.path.getsize(finpt)
-            if tsize > 0:
-                # print "ok template exist and not empty"
-                st_temp = read(finpt, dtype="float32")
-                tt = st_temp[0]
-                # continuous data are stored in stream_df
-                sc = stream_df.select(station=ss, channel=ich)
-                if sc.__nonzero__():
-                    tc = sc[0]
-                    logging.debug("Warning issue: using dirty data with spikes and gaps 'fft' "
-                          "method could not work properly. "
-                          "Try 'direct' to ensure more robustness "
-                          "The correlate_template function is set now "
-                          "to 'auto' and different environments "
-                          "as Windows or Mac could not have consistent results")
+        tsize = os.path.getsize(finpt)
+        if tsize > 0:
+            # print "ok template exist and not empty"
+            st_temp = read(finpt, dtype="float32")
+            tt = st_temp[0]
+            # continuous data are stored in stream_df
+            sc = stream_df.select(station=ss, channel=ich)
+            if sc.__nonzero__():
+                tc = sc[0]
+                logging.debug("Warning issue: using dirty data with spikes and gaps 'fft' "
+                      "method could not work properly. "
+                      "Try 'direct' to ensure more robustness "
+                      "The correlate_template function is set now "
+                      "to 'auto' and different environments "
+                      "as Windows or Mac could not have consistent results")
 
-                    fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
-                    fct = np.nan_to_num(fct)
-                    stats = {"network": tc.stats.network,
-                             "station": tc.stats.station,
-                             "location": "",
-                             "channel": tc.stats.channel,
-                             "starttime": tc.stats.starttime,
-                             "npts": len(fct),
-                             "sampling_rate": tc.stats.sampling_rate,
-                             "mseed": {"dataquality": "D"}}
-                    trnew = Trace(data=fct, header=stats)
-                    tc = trnew.copy()
-                    st_cft = Stream(traces=[tc])
-                else:
-                    logging.debug("No stream is found")
+                fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
+                fct = np.nan_to_num(fct)
+                stats = {"network": tc.stats.network,
+                     "station": tc.stats.station,
+                     "location": "",
+                     "channel": tc.stats.channel,
+                     "starttime": tc.stats.starttime,
+                     "npts": len(fct),
+                     "sampling_rate": tc.stats.sampling_rate,
+                     "mseed": {"dataquality": "D"}}
+                trnew = Trace(data=fct, header=stats)
+                tc = trnew.copy()
+                st_cft = Stream(traces=[tc])
             else:
-                logging.debug(f"Template event is empty {finpt}")
-        except OSError:
-            pass
+                logging.debug("No stream is found")
+        else:
+            logging.debug(f"Template event is empty {finpt}")
     return st_cft
 
 
