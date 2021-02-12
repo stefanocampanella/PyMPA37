@@ -106,23 +106,16 @@ def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
             sc = stream_df.select(station=ss, channel=ich)
             if sc.__nonzero__():
                 tc = sc[0]
-                logging.debug("Warning issue: using dirty data with spikes and gaps 'fft' "
-                      "method could not work properly. "
-                      "Try 'direct' to ensure more robustness "
-                      "The correlate_template function is set now "
-                      "to 'auto' and different environments "
-                      "as Windows or Mac could not have consistent results")
-
                 fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
                 fct = np.nan_to_num(fct)
                 stats = {"network": tc.stats.network,
-                     "station": tc.stats.station,
-                     "location": "",
-                     "channel": tc.stats.channel,
-                     "starttime": tc.stats.starttime,
-                     "npts": len(fct),
-                     "sampling_rate": tc.stats.sampling_rate,
-                     "mseed": {"dataquality": "D"}}
+                         "station": tc.stats.station,
+                         "location": "",
+                         "channel": tc.stats.channel,
+                         "starttime": tc.stats.starttime,
+                         "npts": len(fct),
+                         "sampling_rate": tc.stats.sampling_rate,
+                         "mseed": {"dataquality": "D"}}
                 trnew = Trace(data=fct, header=stats)
                 tc = trnew.copy()
                 st_cft = Stream(traces=[tc])
@@ -145,10 +138,8 @@ def stack(stall, df, tstart, d, npts, stdup, stddown, nch_min):
     the earliest startime within the stream
     """
     std_trac = np.empty(len(stall))
-    td = np.empty(len(stall))
-    for itr, tr in enumerate(stall):
-        std_trac[itr] = quality_cft(tr)
-    avestd = np.nanmean(std_trac[0:])
+    td = np.fromiter((quality_cft(tr) for tr in stall), dtype=float)
+    avestd = np.nanmean(std_trac)
     avestdup = avestd * stdup
     avestddw = avestd * stddown
 
@@ -164,26 +155,77 @@ def stack(stall, df, tstart, d, npts, stdup, stddown, nch_min):
             s = f"{net}.{sta}.{chan}"
             td[jtr] = float(d[s])
 
-    itr = len(stall)
-    logging.debug(f"itr = {itr}")
     header = {"network": "STACK",
               "station": "BH",
               "channel": "XX",
               "starttime": tstart,
               "sampling_rate": df,
               "npts": npts}
-    if itr >= nch_min:
-        tdifmin = min(td)
-        data = np.nansum([tr.data for tr in stall], axis=0) / itr
 
+    if len(stall) >= nch_min:
+        tdifmin = min(td)
+        data = np.nanmean([tr.data for tr in stall], axis=0)
     else:
         tdifmin = None
         data = np.zeros(npts)
-    tt = Trace(data=data, header=header)
-    return tt, tdifmin
+    return Trace(data=data, header=header), tdifmin
 
 
-def csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1):
+# def csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1):
+#     """
+#     The function check_singlechannelcft compute the maximum CFT's
+#     values at each trigger time and counts the number of channels
+#     having higher cross-correlation
+#     nch, cft_ave, crt are re-evaluated on the basis of
+#     +/- 2 sample approximation. Statistics are written in stat files
+#     """
+#     # important parameters: a sample_tolerance less than 2 results often
+#     # in wrong magnitudes
+#     sample_tolerance = sample_tol
+#     single_channelcft = cc_threshold
+#     trigger_time = trg["time"]
+#     tcft = stcc[0]
+#     t0_tcft = tcft.stats.starttime
+#     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
+#     trigger_sample = int(round(trigger_shift / tcft.stats.delta))
+#     max_sct = np.empty(len(stall))
+#     max_trg = np.empty(len(stall))
+#     max_ind = np.empty(len(stall))
+#
+#     for icft, tsc in enumerate(stall):
+#         chan_sct = (
+#                 tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
+#         )
+#         # get cft amplitude value at corresponding trigger and store it in
+#         # check for possible 2 sample shift and eventually change
+#         # trg['cft_peaks']
+#         tmp0 = max(0, trigger_sample - sample_tolerance)
+#         tmp1 = trigger_sample + sample_tolerance + 1
+#         max_sct[icft] = max(tsc.data[tmp0:tmp1])
+#         max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
+#         max_ind[icft] = sample_tolerance - max_ind[icft]
+#         max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
+#     nch = (max_sct > single_channelcft).sum()
+#
+#     if nch >= nch_min:
+#         nch09 = (max_sct > 0.9).sum()
+#         nch07 = (max_sct > 0.7).sum()
+#         nch05 = (max_sct > 0.5).sum()
+#         nch03 = (max_sct > 0.3).sum()
+#         cft_ave = np.nanmean(max_sct)
+#         crt = cft_ave / tstda
+#         cft_ave_trg = np.nanmean(max_trg)
+#         crt_trg = cft_ave_trg / tstda
+#         max_sct = max_sct.T
+#         max_trg = max_trg.T
+#         chan_sct = chan_sct.T
+#         for idchan in range(len(max_sct)):
+#             f1.write(f"{chan_sct.decode()} {max_trg[idchan]} {max_sct[idchan]} {max_ind[idchan]} \n")
+#         return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09
+#     else:
+#         return tuple(1 for _ in range(9))
+
+def csc(stall, stcc, trg, tstda, sample_tolerance, cc_threshold, nch_min, f1):
     """
     The function check_singlechannelcft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -193,34 +235,29 @@ def csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1):
     """
     # important parameters: a sample_tolerance less than 2 results often
     # in wrong magnitudes
-    sample_tolerance = sample_tol
     single_channelcft = cc_threshold
     trigger_time = trg["time"]
     tcft = stcc[0]
     t0_tcft = tcft.stats.starttime
     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
-    trigger_sample = int(round(trigger_shift / tcft.stats.delta))
-    max_sct = np.empty(len(stall))
-    max_trg = np.empty(len(stall))
-    max_ind = np.empty(len(stall))
-    chan_sct = np.chararray(len(stall), 12)
+    trigger_sample = int(trigger_shift / tcft.stats.delta)
+    len_stall = len(stall)
+    max_sct = np.empty(len_stall)
+    max_trg = np.empty(len_stall)
+    max_ind = np.empty(len_stall)
+    chan_sct = {}
 
     for icft, tsc in enumerate(stall):
         # get cft amplitude value at corresponding trigger and store it in
         # check for possible 2 sample shift and eventually change
         # trg['cft_peaks']
-        chan_sct[icft] = (
-                tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
-        )
-        tmp0 = trigger_sample - sample_tolerance
-
-        if tmp0 < 0:
-            tmp0 = 0
+        chan_sct[icft] = (tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel)
+        tmp0 = max(trigger_sample - sample_tolerance, 0)
         tmp1 = trigger_sample + sample_tolerance + 1
         max_sct[icft] = max(tsc.data[tmp0:tmp1])
         max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
         max_ind[icft] = sample_tolerance - max_ind[icft]
-        max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
+        max_trg[icft] = tsc.data[trigger_sample : trigger_sample + 1]
     nch = (max_sct > single_channelcft).sum()
 
     if nch >= nch_min:
@@ -228,22 +265,15 @@ def csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1):
         nch07 = (max_sct > 0.7).sum()
         nch05 = (max_sct > 0.5).sum()
         nch03 = (max_sct > 0.3).sum()
-        # print("nch ==", nch03, nch05, nch07, nch09)
-        cft_ave = np.nanmean(max_sct[:])
+        cft_ave = np.nanmean(max_sct)
         crt = cft_ave / tstda
-        cft_ave_trg = np.nanmean(max_trg[:])
+        cft_ave_trg = np.nanmean(max_trg)
         crt_trg = cft_ave_trg / tstda
         max_sct = max_sct.T
         max_trg = max_trg.T
-        chan_sct = chan_sct.T
+
         for idchan in range(0, len(max_sct)):
-            str22 = "%s %s %s %s \n" % (
-                chan_sct[idchan].decode(),
-                max_trg[idchan],
-                max_sct[idchan],
-                max_ind[idchan],
-            )
-            f1.write(str22)
+            f1.write(f"{chan_sct[idchan]} {max_trg[idchan]} {max_sct[idchan]} {max_ind[idchan]}\n")
 
     else:
         nch = 1
@@ -288,7 +318,9 @@ def reject_moutliers(data, m=1.0):
 
 
 def mad(dmad):
-    # calculate daily median absolute deviation
+    """
+    calculate daily median absolute deviation
+    """
     ccm = dmad[dmad != 0]
     med_val = np.nanmedian(ccm)
     return np.nansum(abs(ccm - med_val) / len(ccm))

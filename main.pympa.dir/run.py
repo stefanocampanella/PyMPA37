@@ -30,8 +30,7 @@
 # Python "math" libraries
 # Python "bottleneck" utilities to speed up numpy array operations
 #
-# import useful libraries
-
+import itertools
 import os.path
 from time import perf_counter
 
@@ -45,6 +44,7 @@ from obspy.signal.trigger import coincidence_trigger
 
 from pympa import read_parameters, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
 import logging
+import pandas as pd
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
@@ -69,8 +69,8 @@ if __name__ == '__main__':
         travel_dir,
         dateperiod,
         ev_catalog,
-        start_itemp,
-        stop_itemp,
+        t_start,
+        t_stop,
         factor_thre,
         stdup,
         stddown,
@@ -89,18 +89,7 @@ if __name__ == '__main__':
         logging.debug("reading QUAKEML catalog")
     else:
         logging.warning("Event catalog is neither ZMAP nor QUAKEML")
-
     cat = read_events(ev_catalog)
-    ncat = len(cat)
-
-    # read template from standard input
-    # startTemplate = input("INPUT: Enter Starting template ")
-    # stopTemplate = input("INPUT: Enter Ending template ")
-    # print("OUTPUT: Running from template", startTemplate,  " to ", stopTemplate)
-    t_start = start_itemp
-    t_stop = stop_itemp
-
-    # loop over days
 
     # generate list of days "
     year = int(dateperiod[0])
@@ -109,14 +98,7 @@ if __name__ == '__main__':
     period = int(dateperiod[3])
     days = listdays(year, month, day, period)
 
-    # initialise stt as a stream of templates
-    # and stream_df as a stream of continuous waveforms
-    stt = Stream()
-    stream_df = Stream()
-    stream_cft = Stream()
-    stall = Stream()
-    ccmad = Trace()
-
+    stats = []
     for day in days:
         # settings to cut exactly 24 hours file from without including
         # previous/next day
@@ -132,16 +114,10 @@ if __name__ == '__main__':
         iisec = 0
 
         for itemp in range(t_start, t_stop):
-            stt.clear()
             # open file containing detections
-            f = open(f"{itemp}.{day}.cat", "w+")
             logging.debug(f"itemp = {itemp}")
             # open statistics file for each detection
             f1 = open(f"{itemp}.{day}.stats", "w+")
-            # open file including magnitude information
-            f2 = open(f"{itemp}.{day}.stats.mag", "w+")
-            # open file listing exceptions
-            f3 = open(f"{itemp}.{day}.except", "w+")
 
             mt = cat[itemp].magnitudes[0].mag
 
@@ -152,6 +128,7 @@ if __name__ == '__main__':
                 d = dict(x.rstrip().split(None, 1) for x in ttim)
                 v = sorted(d, key=lambda x: float(d[x]))[0:chan_max]
 
+            stt = Stream()
             for vvc in v:
                 n_net, n_sta, n_chn = vvc.split(".")
                 filename = f"{temp_dir}{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
@@ -172,7 +149,7 @@ if __name__ == '__main__':
 
                 for t1, t2 in chunks:
                     logging.debug(f"Processing chunk ({t1}, {t2})")
-                    stream_df.clear()
+                    stream_df = Stream()
                     for tr in stt:
                         finpc1 = f"{cont_dir}{day}.{tr.stats.station}.{tr.stats.channel}"
                         if os.path.exists(finpc1) and os.path.getsize(finpc1) > 0:
@@ -187,25 +164,22 @@ if __name__ == '__main__':
                                 trim_fill(tc, t1, t2)
                                 tc.filter("bandpass", freqmin=lowpassf, freqmax=highpassf, zerophase=True)
                                 # store detrended and filtered continuous data
-                            # in a Stream
+                                # in a Stream
                                 stream_df += Stream(traces=[tc])
 
                     if len(stream_df) >= nch_min:
                         ntl = len(stt)
-                        amaxat = np.empty(ntl)
                         # for each template event
-                        md = np.zeros(ntl)
                         damaxat = {}
                         # reference time to be used for
                         # retrieving time synchronization
                         reft = min([tr.stats.starttime for tr in stt])
 
                         for il, tr in enumerate(stt):
-                            amaxat[il] = max(abs(tr.data))
                             sta_t = tr.stats.station
                             cha_t = tr.stats.channel
                             tid_t = "%s.%s" % (sta_t, cha_t)
-                            damaxat[tid_t] = float(amaxat[il])
+                            damaxat[tid_t] = max(abs(tr.data))
 
                         # find minimum time to recover origin time
                         time_values = [float(v) for v in d.values()]
@@ -213,24 +187,13 @@ if __name__ == '__main__':
                         min_time_key = [k for k, v in d.items() if v == str(min_time_value)]
 
                         # clear global_variable
-                        stream_cft.clear()
+                        stream_cft = Stream()
                         stcc = Stream()
-                        for nn in networks:
-                            for ss in stations:
-                                for ich in channels:
-                                    stream_cft += process_input(temp_dir, itemp, nn, ss, ich, stream_df)
-                        stall.clear()
-                        stcc.clear()
-                        stnew = Stream()
-                        tr = Trace()
-
-                        tc_cft = Trace()
-                        tsnew = UTCDateTime()
+                        for nn, ss, ich in itertools.product(networks, stations, channels):
+                            stream_cft += process_input(temp_dir, itemp, nn, ss, ich, stream_df)
 
                         # seconds in 24 hours
-
                         nfile = len(stream_cft)
-
                         tstart = np.empty(nfile)
                         tend = np.empty(nfile)
                         tdif = np.empty(nfile)
@@ -245,6 +208,7 @@ if __name__ == '__main__':
                             npts = (h24 / nchunk) / delta
                             tdif[idx] = float(d[f"{net}.{sta}.{chan}"])
 
+                        stall = Stream()
                         for idx, tc_cft in enumerate(stream_cft):
                             # get stream starttime
                             tstart[idx] = tc_cft.stats.starttime + tdif[idx]
@@ -262,7 +226,6 @@ if __name__ == '__main__':
 
                         # compute mean cross correlation from the stack of
                         # CFTs (see stack function)
-
                         ccmad, tdifmin = stack(stall, df, tstart, d, npts, stdup, stddown, nch_min)
                         logging.debug(f"tdifmin = {tdifmin}")
 
@@ -280,7 +243,6 @@ if __name__ == '__main__':
                             # resulting from the CFTs stack
                             # essential threshold parameters
                             # Cross correlation thresholds
-                            xcor_cut = thresholdd
                             thr_on = thresholdd
                             thr_off = thresholdd - 0.15 * thresholdd
                             thr_coincidence_sum = 1.0
@@ -298,132 +260,71 @@ if __name__ == '__main__':
                                 trigger_off_extension=3.0,
                                 details=True,
                             )
-                            ntrig = len(triglist)
-
-                            tt = np.empty(ntrig)
-                            cs = np.empty(ntrig)
-                            nch = np.empty(ntrig)
-                            cft_ave = np.empty(ntrig)
-                            crt = np.empty(ntrig)
-                            cft_ave_trg = np.empty(ntrig)
-                            crt_trg = np.empty(ntrig)
-                            nch3 = np.empty(ntrig)
-                            nch5 = np.empty(ntrig)
-                            nch7 = np.empty(ntrig)
-                            nch9 = np.empty(ntrig)
-                            mm = np.empty(ntrig)
-                            timex = UTCDateTime()
-                            tdifmin = min(tdif[0:])
+                            tdifmin = min(tdif)
 
                             for itrig, trg in enumerate(triglist):
                                 # tdifmin is computed for contributing channels
                                 # within the stack function
                                 if tdifmin == min_time_value:
-                                    tt[itrig] = trg["time"] + min_time_value
+                                    tt = trg["time"] + min_time_value
                                 else:
                                     diff_time = min_time_value - tdifmin
-                                    tt[itrig] = trg["time"] + diff_time + min_time_value
-                                cs[itrig] = trg["coincidence_sum"]
-                                cft_ave[itrig] = trg["cft_peak_wmean"]
-                                crt[itrig] = trg["cft_peaks"][0] / tstda
-                                # traceID = trg['trace_ids']
-                                # check single channel CFT
+                                    tt = trg["time"] + diff_time + min_time_value
                                 [
-                                    nch[itrig],
-                                    cft_ave[itrig],
-                                    crt[itrig],
-                                    cft_ave_trg[itrig],
-                                    crt_trg[itrig],
-                                    nch3[itrig],
-                                    nch5[itrig],
-                                    nch7[itrig],
-                                    nch9[itrig],
+                                    nch,
+                                    cft_ave,
+                                    crt,
+                                    cft_ave_trg,
+                                    crt_trg,
+                                    nch3,
+                                    nch5,
+                                    nch7,
+                                    nch9
                                 ] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1)
 
-                                if int(nch[itrig]) >= nch_min:
+                                if int(nch) >= nch_min:
                                     nn = len(stream_df)
-                                    amaxac = np.zeros(nn)
                                     md = np.zeros(nn)
                                     # for each trigger, detrended,
                                     # and filtered continuous
                                     # data channels are trimmed and
                                     # amplitude useful to
                                     # estimate magnitude is measured.
-                                    damaxac = {}
-                                    mchan = {}
-                                    timestart = UTCDateTime()
-                                    timex = UTCDateTime(tt[itrig])
+                                    timex = UTCDateTime(tt)
                                     for il, tc in enumerate(stream_df):
                                         ss = tc.stats.station
                                         ich = tc.stats.channel
                                         netwk = tc.stats.network
                                         if stt.select(station=ss, channel=ich).__nonzero__():
                                             ttt = stt.select(station=ss, channel=ich)[0]
-                                            s = f"{netwk}.{ss}.{ich}"
                                             uts = UTCDateTime(ttt.stats.starttime).timestamp
                                             utr = UTCDateTime(reft).timestamp
                                             timestart = timex - tdifmin + (uts - utr)
                                             timend = timestart + temp_length
                                             ta = tc.copy()
                                             ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-                                            amaxac[il] = max(abs(ta.data))
                                             tid_c = f"{ss}.{ich}"
-                                            damaxac[tid_c] = float(amaxac[il])
-                                            dct = damaxac[tid_c]
+                                            damaxac = max(abs(ta.data))
+                                            dct = damaxac
                                             dtt = damaxat[tid_c]
                                             if dct != 0 and dtt != 0:
-                                                md[il] = mag_detect(mt, damaxat[tid_c], damaxac[tid_c])
-                                                mchan[tid_c] = md[il]
-                                                f2.write(f"{tid_c}{mchan[tid_c]}\n")
+                                                md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
+                                                # f2.write(f"{tid_c} {md[il]}\n")
                                     mdr = reject_moutliers(md, 1)
-                                    mm[itrig] = round(np.mean(mdr), 2)
-                                    cft_ave[itrig] = round(cft_ave[itrig], 3)
-                                    crt[itrig] = round(crt[itrig], 3)
-                                    cft_ave_trg[itrig] = round(cft_ave_trg[itrig], 3)
-                                    crt_trg[itrig] = round(crt_trg[itrig], 3)
-                                    str33 = (
-                                            "%s %s %s %s %s %s %s %s %s "
-                                            "%s %s %s %s %s %s %s\n"
-                                            % (
-                                                day[0:6],
-                                                str(itemp),
-                                                str(itrig),
-                                                str(UTCDateTime(tt[itrig])),
-                                                str(mm[itrig]),
-                                                str(mt),
-                                                str(nch[itrig]),
-                                                str(tstda),
-                                                str(cft_ave[itrig]),
-                                                str(crt[itrig]),
-                                                str(cft_ave_trg[itrig]),
-                                                str(crt_trg[itrig]),
-                                                str(nch3[itrig]),
-                                                str(nch5[itrig]),
-                                                str(nch7[itrig]),
-                                                str(nch9[itrig]),
-                                            )
-                                    )
-                                    f1.write(str33)
-                                    f2.write(str33)
-                                    str1 = "%s %s %s %s %s %s %s %s\n" % (
-                                        str(itemp),
-                                        str(UTCDateTime(tt[itrig])),
-                                        str(mm[itrig]),
-                                        str(cft_ave[itrig]),
-                                        str(crt[itrig]),
-                                        str(cft_ave_trg[itrig]),
-                                        str(crt_trg[itrig]),
-                                        str(int(nch[itrig])),
-                                    )
-                                    f.write(str1)
+                                    mm = round(mdr.mean(), 2)
+                                    str33 = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
+                                             cft_ave, crt, cft_ave_trg, crt_trg,
+                                             nch3, nch5, nch7, nch9)
+                                    f1.write(" ".join(f"{x}" for x in str33) + "\n")
                         else:
-                            f3.write(f"{day} {itemp} {t1} {t2} num. correlograms lower than nch_min\n")
+                            logging.info(f"{day} {itemp} {t1} {t2} num. correlograms lower than nch_min\n")
                     else:
-                        f3.write(f"{day} {itemp} {t1} {t2}  num.  24h channels lower than nch_min\n")
+                        logging.info(f"{day} {itemp} {t1} {t2}  num.  24h channels lower than nch_min\n")
             else:
-                f3.write(f"{day} {itemp} num.  templates lower than nch_min\n")
-            f1.close()
-            f2.close()
-            f3.close()
-            f.close()
+                logging.info(f"{day} {itemp} num.  templates lower than nch_min\n")
+    columns = ['itemp', 'itrig', 'datetime', 'mm', 'mt', 'nch', 'tstda',
+               'cft_ave', 'crt', 'cft_ave_trg', 'crt_trg',
+               'nch3', 'nch5', 'nch7', 'nch9']
+    df = pd.DataFrame.from_records(stats, columns=columns)
+    df.to_csv('stats.csv', index=False)
     print(" elapsed time ", perf_counter() - start_time, " seconds")
