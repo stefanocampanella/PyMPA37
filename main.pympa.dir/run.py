@@ -155,7 +155,7 @@ if __name__ == '__main__':
                         damaxat = {}
                         # reference time to be used for
                         # retrieving time synchronization
-                        reft = min([tr.stats.starttime for tr in stt])
+                        reft = min(tr.stats.starttime for tr in stt)
 
                         for il, tr in enumerate(stt):
                             sta_t = tr.stats.station
@@ -196,7 +196,7 @@ if __name__ == '__main__':
 
                         # compute mean cross correlation from the stack of
                         # CFTs (see stack function)
-                        tstart = min([tr.stats.starttime for tr in stall])
+                        tstart = min(tr.stats.starttime for tr in stall)
                         df = stall[0].stats.sampling_rate
                         npts = stall[0].stats.npts
                         ccmad, tdifmin = stack(stall, df, tstart, d, npts, stdup, stddown, nch_min)
