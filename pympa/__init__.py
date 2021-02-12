@@ -85,12 +85,11 @@ def rolling_window(a, window):
 
 
 # itemp = template number, nn =  network code, ss = station code,
-# ich = channel code, stream_df = Stream() object as defined in obspy
-# library
+# ich = channel code, stream_df = Stream() object as defined in obspy library
 def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
-    st_cft = Stream()
     temp_file = f"{itemp}.{nn}.{ss}..{ich}.mseed"
     finpt = f"{temp_dir}{temp_file}"
+    st_cft = Stream()
     if os.path.isfile(finpt):
         tsize = os.path.getsize(finpt)
         if tsize > 0:
@@ -111,9 +110,7 @@ def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
                          "npts": len(fct),
                          "sampling_rate": tc.stats.sampling_rate,
                          "mseed": {"dataquality": "D"}}
-                trnew = Trace(data=fct, header=stats)
-                tc = trnew.copy()
-                st_cft = Stream(traces=[tc])
+                st_cft = Stream(traces=Trace(data=fct, header=stats))
             else:
                 logging.debug("No stream is found")
         else:

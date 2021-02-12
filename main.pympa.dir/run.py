@@ -36,7 +36,7 @@ import os.path
 from time import perf_counter
 
 import numpy as np
-from obspy import read, Stream, Trace
+from obspy import read, Stream
 from obspy.core import UTCDateTime
 from obspy.core.event import read_events
 from obspy.io.quakeml.core import _is_quakeml
@@ -51,30 +51,28 @@ if __name__ == '__main__':
                         format='%(levelname)s: %(message)s')
     start_time = perf_counter()
     # read 'parameters24' file to setup useful variables
-    [
-        stations,
-        channels,
-        networks,
-        lowpassf,
-        highpassf,
-        sample_tol,
-        cc_threshold,
-        nch_min,
-        temp_length,
-        utc_prec,
-        cont_dir,
-        temp_dir,
-        travel_dir,
-        dateperiod,
-        ev_catalog,
-        t_start,
-        t_stop,
-        factor_thre,
-        stdup,
-        stddown,
-        chan_max,
-        nchunk
-    ] = read_parameters("parameters24")
+    [stations,
+     channels,
+     networks,
+     lowpassf,
+     highpassf,
+     sample_tol,
+     cc_threshold,
+     nch_min,
+     temp_length,
+     utc_prec,
+     cont_dir,
+     temp_dir,
+     travel_dir,
+     dateperiod,
+     ev_catalog,
+     t_start,
+     t_stop,
+     factor_thre,
+     stdup,
+     stddown,
+     chan_max,
+     nchunk] = read_parameters("parameters24")
 
     # set time precision for UTCDATETIME
     UTCDateTime.DEFAULT_PRECISION = utc_prec
@@ -104,7 +102,7 @@ if __name__ == '__main__':
             # open file containing detections
             logging.debug(f"itemp = {itemp}")
             # open statistics file for each detection
-            f1 = open(f"{itemp}.{day}.stats", "w+")
+            f1 = open(f"{itemp}.{day.strftime('%y%m%d')}.stats", "w+")
 
             mt = cat[itemp].magnitudes[0].mag
 
@@ -123,12 +121,10 @@ if __name__ == '__main__':
                 stt += read(filename, dtype="float32")
 
             if len(stt) >= nch_min:
-                tc = Trace()
-                chunks = []
                 h24 = 86400
                 chunk_start = UTCDateTime(day)
                 end_time = chunk_start + h24
-
+                chunks = []
                 while chunk_start < end_time:
                     chunk_end = min(chunk_start + h24 / nchunk, end_time)
                     chunks.append((chunk_start, chunk_end))
@@ -182,35 +178,27 @@ if __name__ == '__main__':
                         tstart = np.empty(nfile)
                         tend = np.empty(nfile)
                         tdif = np.empty(nfile)
-
+                        stall = Stream()
                         for idx, tc_cft in enumerate(stream_cft):
                             # get station name from trace
                             sta = tc_cft.stats.station
                             chan = tc_cft.stats.channel
                             net = tc_cft.stats.network
-                            delta = tc_cft.stats.delta
-
-                            npts = (h24 / nchunk) / delta
-                            tdif[idx] = float(d[f"{net}.{sta}.{chan}"])
-
-                        stall = Stream()
-                        for idx, tc_cft in enumerate(stream_cft):
                             # get stream starttime
-                            tstart[idx] = tc_cft.stats.starttime + tdif[idx]
                             # waveforms should have the same number of npts
                             # and should be synchronized to the S-wave travel time
-                            secs = (h24 / nchunk) + 60
-                            tend[idx] = tstart[idx] + secs
-                            check_npts = (tend[idx] - tstart[idx]) / tc_cft.stats.delta
+                            tdif[idx] = d[f"{net}.{sta}.{chan}"]
+                            tstart[idx] = tc_cft.stats.starttime + tdif[idx]
+                            tend[idx] = tstart[idx] + (h24 / nchunk) + 60
                             ts = UTCDateTime(tstart[idx], precision=utc_prec)
                             te = UTCDateTime(tend[idx], precision=utc_prec)
                             stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
-                        tstart = min([tr.stats.starttime for tr in stall])
-                        df = stall[0].stats.sampling_rate
-                        npts = stall[0].stats.npts
 
                         # compute mean cross correlation from the stack of
                         # CFTs (see stack function)
+                        tstart = min([tr.stats.starttime for tr in stall])
+                        df = stall[0].stats.sampling_rate
+                        npts = stall[0].stats.npts
                         ccmad, tdifmin = stack(stall, df, tstart, d, npts, stdup, stddown, nch_min)
                         logging.debug(f"tdifmin = {tdifmin}")
 
@@ -239,7 +227,6 @@ if __name__ == '__main__':
                                                            delete_long_trigger=False,
                                                            trigger_off_extension=3.0,
                                                            details=True)
-                            tdifmin = min(tdif)
 
                             for itrig, trg in enumerate(triglist):
                                 # tdifmin is computed for contributing channels within the stack function
