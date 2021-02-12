@@ -31,6 +31,7 @@
 # Python "bottleneck" utilities to speed up numpy array operations
 #
 import itertools
+import logging
 import os.path
 from time import perf_counter
 
@@ -43,7 +44,6 @@ from obspy.io.zmap.core import _is_zmap
 from obspy.signal.trigger import coincidence_trigger
 
 from pympa import read_parameters, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
-import logging
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
@@ -221,57 +221,48 @@ if __name__ == '__main__':
                             # define threshold as 9 times std  and quality index
                             thresholdd = factor_thre * tstda
 
-                            # Run coincidence trigger on a single CC trace
-                            # resulting from the CFTs stack
-                            # essential threshold parameters
-                            # Cross correlation thresholds
+                            # Run coincidence trigger on a single CC trace resulting from the CFTs stack
+                            # essential threshold parameters Cross correlation thresholds
                             thr_on = thresholdd
                             thr_off = thresholdd - 0.15 * thresholdd
                             thr_coincidence_sum = 1.0
                             similarity_thresholds = {"BH": thr_on}
                             trigger_type = None
                             stcc = Stream(traces=[ccmad])
-                            triglist = coincidence_trigger(
-                                trigger_type,
-                                thr_on,
-                                thr_off,
-                                stcc,
-                                thr_coincidence_sum,
-                                trace_ids=None,
-                                similarity_thresholds=similarity_thresholds,
-                                delete_long_trigger=False,
-                                trigger_off_extension=3.0,
-                                details=True,
-                            )
+                            triglist = coincidence_trigger(trigger_type,
+                                                           thr_on,
+                                                           thr_off,
+                                                           stcc,
+                                                           thr_coincidence_sum,
+                                                           trace_ids=None,
+                                                           similarity_thresholds=similarity_thresholds,
+                                                           delete_long_trigger=False,
+                                                           trigger_off_extension=3.0,
+                                                           details=True)
                             tdifmin = min(tdif)
 
                             for itrig, trg in enumerate(triglist):
-                                # tdifmin is computed for contributing channels
-                                # within the stack function
+                                # tdifmin is computed for contributing channels within the stack function
                                 if tdifmin == min_time_value:
                                     tt = trg["time"] + min_time_value
                                 else:
                                     diff_time = min_time_value - tdifmin
                                     tt = trg["time"] + diff_time + min_time_value
-                                [
-                                    nch,
-                                    cft_ave,
-                                    crt,
-                                    cft_ave_trg,
-                                    crt_trg,
-                                    nch3,
-                                    nch5,
-                                    nch7,
-                                    nch9
-                                ] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1)
+                                [nch,
+                                 cft_ave,
+                                 crt,
+                                 cft_ave_trg,
+                                 crt_trg,
+                                 nch3,
+                                 nch5,
+                                 nch7,
+                                 nch9] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1)
 
                                 if int(nch) >= nch_min:
                                     nn = len(stream_df)
                                     md = np.zeros(nn)
-                                    # for each trigger, detrended,
-                                    # and filtered continuous
-                                    # data channels are trimmed and
-                                    # amplitude useful to
+                                    # for each trigger, detrended, and filtered continuous
+                                    # data channels are trimmed and amplitude useful to
                                     # estimate magnitude is measured.
                                     timex = UTCDateTime(tt)
                                     for il, tc in enumerate(stream_df):
@@ -292,7 +283,6 @@ if __name__ == '__main__':
                                             dtt = damaxat[tid_c]
                                             if dct != 0 and dtt != 0:
                                                 md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
-                                                # f2.write(f"{tid_c} {md[il]}\n")
                                     mdr = reject_moutliers(md, 1)
                                     mm = round(mdr.mean(), 2)
                                     str33 = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
