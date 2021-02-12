@@ -52,30 +52,28 @@ def read_parameters(par):
         stddown = float(data[42])
         chan_max = int(data[43])
         nchunk = int(data[44])
-        return (
-            stations,
-            channels,
-            networks,
-            lowpassf,
-            highpassf,
-            sample_tol,
-            cc_threshold,
-            nch_min,
-            temp_length,
-            utc_prec,
-            cont_dir,
-            temp_dir,
-            travel_dir,
-            dateperiod,
-            ev_catalog,
-            start_itemp,
-            stop_itemp,
-            factor_thre,
-            stdup,
-            stddown,
-            chan_max,
-            nchunk,
-        )
+        return (stations,
+                channels,
+                networks,
+                lowpassf,
+                highpassf,
+                sample_tol,
+                cc_threshold,
+                nch_min,
+                temp_length,
+                utc_prec,
+                cont_dir,
+                temp_dir,
+                travel_dir,
+                dateperiod,
+                ev_catalog,
+                start_itemp,
+                stop_itemp,
+                factor_thre,
+                stdup,
+                stddown,
+                chan_max,
+                nchunk)
 
 
 def trim_fill(tc, t1, t2):
@@ -171,61 +169,7 @@ def stack(stall, df, tstart, d, npts, stdup, stddown, nch_min):
     return Trace(data=data, header=header), tdifmin
 
 
-# def csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1):
-#     """
-#     The function check_singlechannelcft compute the maximum CFT's
-#     values at each trigger time and counts the number of channels
-#     having higher cross-correlation
-#     nch, cft_ave, crt are re-evaluated on the basis of
-#     +/- 2 sample approximation. Statistics are written in stat files
-#     """
-#     # important parameters: a sample_tolerance less than 2 results often
-#     # in wrong magnitudes
-#     sample_tolerance = sample_tol
-#     single_channelcft = cc_threshold
-#     trigger_time = trg["time"]
-#     tcft = stcc[0]
-#     t0_tcft = tcft.stats.starttime
-#     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
-#     trigger_sample = int(round(trigger_shift / tcft.stats.delta))
-#     max_sct = np.empty(len(stall))
-#     max_trg = np.empty(len(stall))
-#     max_ind = np.empty(len(stall))
-#
-#     for icft, tsc in enumerate(stall):
-#         chan_sct = (
-#                 tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
-#         )
-#         # get cft amplitude value at corresponding trigger and store it in
-#         # check for possible 2 sample shift and eventually change
-#         # trg['cft_peaks']
-#         tmp0 = max(0, trigger_sample - sample_tolerance)
-#         tmp1 = trigger_sample + sample_tolerance + 1
-#         max_sct[icft] = max(tsc.data[tmp0:tmp1])
-#         max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
-#         max_ind[icft] = sample_tolerance - max_ind[icft]
-#         max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
-#     nch = (max_sct > single_channelcft).sum()
-#
-#     if nch >= nch_min:
-#         nch09 = (max_sct > 0.9).sum()
-#         nch07 = (max_sct > 0.7).sum()
-#         nch05 = (max_sct > 0.5).sum()
-#         nch03 = (max_sct > 0.3).sum()
-#         cft_ave = np.nanmean(max_sct)
-#         crt = cft_ave / tstda
-#         cft_ave_trg = np.nanmean(max_trg)
-#         crt_trg = cft_ave_trg / tstda
-#         max_sct = max_sct.T
-#         max_trg = max_trg.T
-#         chan_sct = chan_sct.T
-#         for idchan in range(len(max_sct)):
-#             f1.write(f"{chan_sct.decode()} {max_trg[idchan]} {max_sct[idchan]} {max_ind[idchan]} \n")
-#         return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09
-#     else:
-#         return tuple(1 for _ in range(9))
-
-def csc(stall, stcc, trg, tstda, sample_tolerance, cc_threshold, nch_min, f1):
+def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min, f1):
     """
     The function check_singlechannelcft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -235,29 +179,26 @@ def csc(stall, stcc, trg, tstda, sample_tolerance, cc_threshold, nch_min, f1):
     """
     # important parameters: a sample_tolerance less than 2 results often
     # in wrong magnitudes
-    single_channelcft = cc_threshold
     trigger_time = trg["time"]
     tcft = stcc[0]
     t0_tcft = tcft.stats.starttime
     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
-    trigger_sample = int(trigger_shift / tcft.stats.delta)
-    len_stall = len(stall)
-    max_sct = np.empty(len_stall)
-    max_trg = np.empty(len_stall)
-    max_ind = np.empty(len_stall)
-    chan_sct = {}
+    trigger_sample = round(trigger_shift / tcft.stats.delta)
+    max_sct = np.empty(len(stall))
+    max_trg = np.empty(len(stall))
+    max_ind = np.empty(len(stall))
+    chan_sct = np.chararray((len(stall),), 12)
 
     for icft, tsc in enumerate(stall):
         # get cft amplitude value at corresponding trigger and store it in
-        # check for possible 2 sample shift and eventually change
-        # trg['cft_peaks']
+        # check for possible 2 sample shift and eventually change trg['cft_peaks']
         chan_sct[icft] = (tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel)
         tmp0 = max(trigger_sample - sample_tolerance, 0)
         tmp1 = trigger_sample + sample_tolerance + 1
         max_sct[icft] = max(tsc.data[tmp0:tmp1])
         max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
         max_ind[icft] = sample_tolerance - max_ind[icft]
-        max_trg[icft] = tsc.data[trigger_sample : trigger_sample + 1]
+        max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
     nch = (max_sct > single_channelcft).sum()
 
     if nch >= nch_min:
@@ -271,22 +212,16 @@ def csc(stall, stcc, trg, tstda, sample_tolerance, cc_threshold, nch_min, f1):
         crt_trg = cft_ave_trg / tstda
         max_sct = max_sct.T
         max_trg = max_trg.T
-
-        for idchan in range(0, len(max_sct)):
-            f1.write(f"{chan_sct[idchan]} {max_trg[idchan]} {max_sct[idchan]} {max_ind[idchan]}\n")
-
+        chan_sct = chan_sct.T
+        for idchan in range(len(max_sct)):
+            str22 = "%s %s %s %s \n" % (chan_sct[idchan].decode(),
+                                        max_trg[idchan],
+                                        max_sct[idchan],
+                                        max_ind[idchan])
+            f1.write(str22)
+        return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09
     else:
-        nch = 1
-        cft_ave = 1
-        crt = 1
-        cft_ave_trg = 1
-        crt_trg = 1
-        nch03 = 1
-        nch05 = 1
-        nch07 = 1
-        nch09 = 1
-
-    return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09
+        return tuple(1 for _ in range(9))
 
 
 def mag_detect(magt, amaxt, amaxd):
