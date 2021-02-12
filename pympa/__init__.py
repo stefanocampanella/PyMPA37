@@ -12,11 +12,8 @@ from obspy.signal.cross_correlation import correlate_template
 def listdays(year, month, day, period):
     """Create a list of days for scanning by templates"""
     init = datetime.datetime(year=year, month=month, day=day)
-    days = []
     for n in range(period):
-        date = init + datetime.timedelta(days=n)
-        days.append(date.strftime("%y%m%d"))
-    return days
+        yield init + datetime.timedelta(days=n)
 
 
 def read_parameters(par):

@@ -44,13 +44,11 @@ from obspy.signal.trigger import coincidence_trigger
 
 from pympa import read_parameters, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
 import logging
-import pandas as pd
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
                         filemode='w',
-                        format='%(asctime)s - %(levelname)s: %(message)s',
-                        level=logging.DEBUG)
+                        format='%(levelname)s: %(message)s')
     start_time = perf_counter()
     # read 'parameters24' file to setup useful variables
     [
@@ -96,22 +94,11 @@ if __name__ == '__main__':
     month = int(dateperiod[1])
     day = int(dateperiod[2])
     period = int(dateperiod[3])
-    days = listdays(year, month, day, period)
 
-    stats = []
-    for day in days:
+    for day in listdays(year, month, day, period):
         # settings to cut exactly 24 hours file from without including
         # previous/next day
-        iday = "%s" % (day[4:6])
-        imonth = "%s" % (day[2:4])
-        iyear = "20%s" % (day[0:2])
-        iiyear = int(iyear)
-        logging.debug(f"Processing {iyear}, {imonth}, {iday}")
-        iimonth = int(imonth)
-        iiday = int(iday)
-        iihour = 23
-        iimin = 59
-        iisec = 0
+        logging.debug(f"Processing {day}")
 
         for itemp in range(t_start, t_stop):
             # open file containing detections
@@ -139,7 +126,7 @@ if __name__ == '__main__':
                 tc = Trace()
                 chunks = []
                 h24 = 86400
-                chunk_start = UTCDateTime(iiyear, iimonth, iiday)
+                chunk_start = UTCDateTime(day)
                 end_time = chunk_start + h24
 
                 while chunk_start < end_time:
@@ -151,7 +138,7 @@ if __name__ == '__main__':
                     logging.debug(f"Processing chunk ({t1}, {t2})")
                     stream_df = Stream()
                     for tr in stt:
-                        finpc1 = f"{cont_dir}{day}.{tr.stats.station}.{tr.stats.channel}"
+                        finpc1 = f"{cont_dir}{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
                         if os.path.exists(finpc1) and os.path.getsize(finpc1) > 0:
                             st = read(finpc1, starttime=t1, endtime=t2, dtype="float32")
                             if len(st) != 0:
@@ -163,8 +150,7 @@ if __name__ == '__main__':
                                 # 24h continuous trace starts 00 h 00 m 00.0s
                                 trim_fill(tc, t1, t2)
                                 tc.filter("bandpass", freqmin=lowpassf, freqmax=highpassf, zerophase=True)
-                                # store detrended and filtered continuous data
-                                # in a Stream
+                                # store detrended and filtered continuous data in a Stream
                                 stream_df += Stream(traces=[tc])
 
                     if len(stream_df) >= nch_min:
@@ -188,7 +174,6 @@ if __name__ == '__main__':
 
                         # clear global_variable
                         stream_cft = Stream()
-                        stcc = Stream()
                         for nn, ss, ich in itertools.product(networks, stations, channels):
                             stream_cft += process_input(temp_dir, itemp, nn, ss, ich, stream_df)
 
@@ -236,9 +221,6 @@ if __name__ == '__main__':
                             # define threshold as 9 times std  and quality index
                             thresholdd = factor_thre * tstda
 
-                            # Trace ccmad is stored in a Stream
-                            stcc = Stream(traces=[ccmad])
-
                             # Run coincidence trigger on a single CC trace
                             # resulting from the CFTs stack
                             # essential threshold parameters
@@ -248,6 +230,7 @@ if __name__ == '__main__':
                             thr_coincidence_sum = 1.0
                             similarity_thresholds = {"BH": thr_on}
                             trigger_type = None
+                            stcc = Stream(traces=[ccmad])
                             triglist = coincidence_trigger(
                                 trigger_type,
                                 thr_on,
@@ -322,9 +305,4 @@ if __name__ == '__main__':
                         logging.info(f"{day} {itemp} {t1} {t2}  num.  24h channels lower than nch_min\n")
             else:
                 logging.info(f"{day} {itemp} num.  templates lower than nch_min\n")
-    columns = ['itemp', 'itrig', 'datetime', 'mm', 'mt', 'nch', 'tstda',
-               'cft_ave', 'crt', 'cft_ave_trg', 'crt_trg',
-               'nch3', 'nch5', 'nch7', 'nch9']
-    df = pd.DataFrame.from_records(stats, columns=columns)
-    df.to_csv('stats.csv', index=False)
     print(" elapsed time ", perf_counter() - start_time, " seconds")
