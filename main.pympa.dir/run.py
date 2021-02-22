@@ -102,7 +102,7 @@ if __name__ == '__main__':
             # open file containing detections
             logging.debug(f"itemp = {itemp}")
             # open statistics file for each detection
-            f1 = open(f"{itemp}.{day.strftime('%y%m%d')}.stats", "w+")
+            events_list = []
 
             mt = cat[itemp].magnitudes[0].mag
 
@@ -243,7 +243,8 @@ if __name__ == '__main__':
                                  nch3,
                                  nch5,
                                  nch7,
-                                 nch9] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min, f1)
+                                 nch9,
+                                 channels_list] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min)
 
                                 if int(nch) >= nch_min:
                                     nn = len(stream_df)
@@ -272,14 +273,23 @@ if __name__ == '__main__':
                                                 md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
                                     mdr = reject_moutliers(md, 1)
                                     mm = round(mdr.mean(), 2)
-                                    str33 = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
+                                    record = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
                                              cft_ave, crt, cft_ave_trg, crt_trg,
-                                             nch3, nch5, nch7, nch9)
-                                    f1.write(" ".join(f"{x}" for x in str33) + "\n")
+                                             nch3, nch5, nch7, nch9, channels_list)
+                                    events_list.append(record)
                         else:
                             logging.info(f"{day} {itemp} {t1} {t2} num. correlograms lower than nch_min\n")
                     else:
                         logging.info(f"{day} {itemp} {t1} {t2}  num.  24h channels lower than nch_min\n")
             else:
                 logging.info(f"{day} {itemp} num.  templates lower than nch_min\n")
+
+            with open(f"{itemp}.{day.strftime('%y%m%d')}.stats", "w+") as file:
+                for event in events_list:
+                    channels_list = event[-1]
+                    for channel in channels_list:
+                        str22 = "%s %s %s %s \n" % channel
+                        file.write(str22)
+                    file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
+
     print(" elapsed time ", timer() - start_time, " seconds")

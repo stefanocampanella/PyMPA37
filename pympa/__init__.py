@@ -163,9 +163,9 @@ def stack(stall, df, tstart, d, npts, stdup, stddown, nch_min):
     return Trace(data=data, header=header), tdifmin
 
 
-def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min, f1):
+def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min):
     """
-    The function check_singlechannelcft compute the maximum CFT's
+    The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
     having higher cross-correlation
     nch, cft_ave, crt are re-evaluated on the basis of
@@ -207,15 +207,16 @@ def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min, f
         max_sct = max_sct.T
         max_trg = max_trg.T
         chan_sct = chan_sct.T
+        channels_list = []
         for idchan in range(len(max_sct)):
-            str22 = "%s %s %s %s \n" % (chan_sct[idchan].decode(),
-                                        max_trg[idchan],
-                                        max_sct[idchan],
-                                        max_ind[idchan])
-            f1.write(str22)
-        return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09
+            record = (chan_sct[idchan].decode(),
+                      max_trg[idchan],
+                      max_sct[idchan],
+                      max_ind[idchan])
+            channels_list.append(record)
+        return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09, channels_list
     else:
-        return tuple(1 for _ in range(9))
+        return tuple(1 for _ in range(10))
 
 
 def mag_detect(magt, amaxt, amaxd):
