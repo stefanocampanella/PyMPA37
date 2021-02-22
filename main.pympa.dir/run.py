@@ -33,7 +33,7 @@
 import itertools
 import logging
 import os.path
-from timeit import default_timer as timer
+from time import perf_counter as timer
 
 import numpy as np
 from obspy import read, Stream
