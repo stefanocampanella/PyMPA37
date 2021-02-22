@@ -31,18 +31,12 @@
 # Python "bottleneck" utilities to speed up numpy array operations
 #
 import itertools
-import logging
-import os.path
-from pathlib import Path
 from time import perf_counter as timer
 
-import numpy as np
-from obspy import read, Stream
 from obspy.core import UTCDateTime
 from obspy.core.event import read_events
 from obspy.signal.trigger import coincidence_trigger
 
-# from pympa import read_parameters, read_settings, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
 from pympa import *
 
 if __name__ == '__main__':
@@ -95,36 +89,16 @@ if __name__ == '__main__':
                     chunk_stream = get_chunk_stream(template_stream, day, t1, t2, settings)
 
                     if len(chunk_stream) >= nch_min:
-                        ntl = len(template_stream)
-                        # for each template event
-                        damaxat = {}
-                        # reference time to be used for
-                        # retrieving time synchronization
-                        reft = min(tr.stats.starttime for tr in template_stream)
 
-                        for il, tr in enumerate(template_stream):
-                            sta_t = tr.stats.station
-                            cha_t = tr.stats.channel
-                            tid_t = "%s.%s" % (sta_t, cha_t)
-                            damaxat[tid_t] = max(abs(tr.data))
-
-                        # find minimum time to recover origin time
-                        time_values = [float(v) for v in travel_times.values()]
-                        min_time_value = min(time_values)
-                        min_time_key = [k for k, v in travel_times.items() if v == str(min_time_value)]
-
-                        # clear global_variable
-                        stream_cft = Stream()
-                        for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
-                            stream_cft += process_input(settings['temp_dir'], itemp, nn, ss, ich, chunk_stream)
+                        correlation_stream = get_correlation_stream(itemp, chunk_stream, settings)
 
                         # seconds in 24 hours
-                        nfile = len(stream_cft)
+                        nfile = len(correlation_stream)
                         tstart = np.empty(nfile)
                         tend = np.empty(nfile)
                         tdif = np.empty(nfile)
                         stall = Stream()
-                        for idx, tc_cft in enumerate(stream_cft):
+                        for idx, tc_cft in enumerate(correlation_stream):
                             # get station name from trace
                             sta = tc_cft.stats.station
                             chan = tc_cft.stats.channel
@@ -144,9 +118,21 @@ if __name__ == '__main__':
                         tstart = min(tr.stats.starttime for tr in stall)
                         df = stall[0].stats.sampling_rate
                         npts = stall[0].stats.npts
-                        ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings['stdup'], settings['stddown'], nch_min)
+                        ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings['stdup'],
+                                               settings['stddown'], nch_min)
                         logging.debug(f"tdifmin = {tdifmin}")
 
+                        # find minimum time to recover origin time
+                        min_time_value = min(float(v) for v in travel_times.values())
+                        # reference time to be used for
+                        # retrieving time synchronization
+                        reft = min(tr.stats.starttime for tr in template_stream)
+                        damaxat = {}
+                        for il, tr in enumerate(template_stream):
+                            sta_t = tr.stats.station
+                            cha_t = tr.stats.channel
+                            tid_t = "%s.%s" % (sta_t, cha_t)
+                            damaxat[tid_t] = max(abs(tr.data))
                         if tdifmin is not None:
                             # compute mean absolute deviation of abs(ccmad)
                             tstda = mad(ccmad.data)
@@ -189,7 +175,8 @@ if __name__ == '__main__':
                                  nch5,
                                  nch7,
                                  nch9,
-                                 channels_list] = csc(stall, stcc, trg, tstda, settings['sample_tol'], settings['cc_threshold'], nch_min)
+                                 channels_list] = csc(stall, stcc, trg, tstda, settings['sample_tol'],
+                                                      settings['cc_threshold'], nch_min)
 
                                 if int(nch) >= nch_min:
                                     nn = len(chunk_stream)
@@ -219,8 +206,8 @@ if __name__ == '__main__':
                                     mdr = reject_moutliers(md, 1)
                                     mm = round(mdr.mean(), 2)
                                     record = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
-                                             cft_ave, crt, cft_ave_trg, crt_trg,
-                                             nch3, nch5, nch7, nch9, channels_list)
+                                              cft_ave, crt, cft_ave_trg, crt_trg,
+                                              nch3, nch5, nch7, nch9, channels_list)
                                     events_list.append(record)
                         else:
                             logging.info(f"{day} {itemp} {t1} {t2} num. correlograms lower than nch_min\n")

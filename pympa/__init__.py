@@ -1,3 +1,4 @@
+import itertools
 import os
 import os.path
 import datetime
@@ -10,6 +11,12 @@ from obspy import read, Stream, Trace
 from obspy.signal.cross_correlation import correlate_template
 from yaml import load, FullLoader
 
+def get_correlation_stream(itemp, chunk_stream, settings):
+    stream_cft = Stream()
+    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'],
+                                         settings['channels']):
+        stream_cft += process_input(settings['temp_dir'], itemp, nn, ss, ich, chunk_stream)
+    return stream_cft
 
 def get_chunk_stream(template_stream, day, t1, t2, settings):
     stream_df = Stream()
