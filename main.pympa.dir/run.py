@@ -42,36 +42,14 @@ from obspy.core import UTCDateTime
 from obspy.core.event import read_events
 from obspy.signal.trigger import coincidence_trigger
 
-from pympa import read_parameters, read_settings, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
+# from pympa import read_parameters, read_settings, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
+from pympa import *
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
                         filemode='w',
                         format='%(levelname)s: %(message)s')
     start_time = timer()
-    # read 'parameters24' file to setup useful variables
-    # [stations,
-    #  channels,
-    #  networks,
-    #  lowpassf,
-    #  highpassf,
-    #  sample_tol,
-    #  cc_threshold,
-    #  nch_min,
-    #  temp_length,
-    #  utc_prec,
-    #  cont_dir,
-    #  temp_dir,
-    #  travel_dir,
-    #  dateperiod,
-    #  ev_catalog,
-    #  t_start,
-    #  t_stop,
-    #  factor_thre,
-    #  stdup,
-    #  stddown,
-    #  chan_max,
-    #  nchunk] = read_parameters("parameters24")
     settings = read_settings("settings.yaml")
 
     # set time precision for UTCDATETIME
@@ -96,21 +74,13 @@ if __name__ == '__main__':
             # and read only these templates
             travel_dir = Path(settings['travel_dir'])
             with open(travel_dir / f"{itemp}.ttimes", "r") as ttim:
-                d = dict(x.rstrip().split(None, 1) for x in ttim)
-                v = sorted(d, key=lambda x: float(d[x]))[0:settings['chan_max']]
+                travel_times = dict(x.rstrip().split(None, 1) for x in ttim)
 
-            temp_dir = Path(settings['temp_dir'])
-            stt = Stream()
-            for vvc in v:
-                n_net, n_sta, n_chn = vvc.split(".")
-                filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
-                with filepath.open('rb') as file:
-                    logging.debug(f"Reading {filepath}")
-                    stt += read(file, dtype="float32")
+            template_stream = get_template_stream(itemp, travel_times, settings)
 
             nch_min = settings['nch_min']
             nchunk = settings['nchunk']
-            if len(stt) >= nch_min:
+            if len(template_stream) >= nch_min:
                 h24 = 86400
                 chunk_start = UTCDateTime(day)
                 end_time = chunk_start + h24
@@ -122,48 +92,31 @@ if __name__ == '__main__':
 
                 for t1, t2 in chunks:
                     logging.debug(f"Processing chunk ({t1}, {t2})")
-                    stream_df = Stream()
-                    for tr in stt:
-                        cont_dir = Path(settings['cont_dir'])
-                        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
-                        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-                            with filepath.open('rb') as file:
-                                st = read(file, starttime=t1, endtime=t2, dtype="float32")
-                            if len(st) != 0:
-                                st.merge(method=1, fill_value=0)
-                                tc = st[0]
-                                stat = tc.stats.station
-                                chan = tc.stats.channel
-                                tc.detrend("constant")
-                                # 24h continuous trace starts 00 h 00 m 00.0s
-                                trim_fill(tc, t1, t2)
-                                tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
-                                # store detrended and filtered continuous data in a Stream
-                                stream_df += Stream(traces=[tc])
+                    chunk_stream = get_chunk_stream(template_stream, day, t1, t2, settings)
 
-                    if len(stream_df) >= nch_min:
-                        ntl = len(stt)
+                    if len(chunk_stream) >= nch_min:
+                        ntl = len(template_stream)
                         # for each template event
                         damaxat = {}
                         # reference time to be used for
                         # retrieving time synchronization
-                        reft = min(tr.stats.starttime for tr in stt)
+                        reft = min(tr.stats.starttime for tr in template_stream)
 
-                        for il, tr in enumerate(stt):
+                        for il, tr in enumerate(template_stream):
                             sta_t = tr.stats.station
                             cha_t = tr.stats.channel
                             tid_t = "%s.%s" % (sta_t, cha_t)
                             damaxat[tid_t] = max(abs(tr.data))
 
                         # find minimum time to recover origin time
-                        time_values = [float(v) for v in d.values()]
+                        time_values = [float(v) for v in travel_times.values()]
                         min_time_value = min(time_values)
-                        min_time_key = [k for k, v in d.items() if v == str(min_time_value)]
+                        min_time_key = [k for k, v in travel_times.items() if v == str(min_time_value)]
 
                         # clear global_variable
                         stream_cft = Stream()
                         for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
-                            stream_cft += process_input(temp_dir, itemp, nn, ss, ich, stream_df)
+                            stream_cft += process_input(settings['temp_dir'], itemp, nn, ss, ich, chunk_stream)
 
                         # seconds in 24 hours
                         nfile = len(stream_cft)
@@ -179,7 +132,7 @@ if __name__ == '__main__':
                             # get stream starttime
                             # waveforms should have the same number of npts
                             # and should be synchronized to the S-wave travel time
-                            tdif[idx] = d[f"{net}.{sta}.{chan}"]
+                            tdif[idx] = travel_times[f"{net}.{sta}.{chan}"]
                             tstart[idx] = tc_cft.stats.starttime + tdif[idx]
                             tend[idx] = tstart[idx] + (h24 / nchunk) + 60
                             ts = UTCDateTime(tstart[idx], precision=settings['utc_prec'])
@@ -191,7 +144,7 @@ if __name__ == '__main__':
                         tstart = min(tr.stats.starttime for tr in stall)
                         df = stall[0].stats.sampling_rate
                         npts = stall[0].stats.npts
-                        ccmad, tdifmin = stack(stall, df, tstart, d, npts, settings['stdup'], settings['stddown'], nch_min)
+                        ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings['stdup'], settings['stddown'], nch_min)
                         logging.debug(f"tdifmin = {tdifmin}")
 
                         if tdifmin is not None:
@@ -239,18 +192,18 @@ if __name__ == '__main__':
                                  channels_list] = csc(stall, stcc, trg, tstda, settings['sample_tol'], settings['cc_threshold'], nch_min)
 
                                 if int(nch) >= nch_min:
-                                    nn = len(stream_df)
+                                    nn = len(chunk_stream)
                                     md = np.zeros(nn)
                                     # for each trigger, detrended, and filtered continuous
                                     # data channels are trimmed and amplitude useful to
                                     # estimate magnitude is measured.
                                     timex = UTCDateTime(tt)
-                                    for il, tc in enumerate(stream_df):
+                                    for il, tc in enumerate(chunk_stream):
                                         ss = tc.stats.station
                                         ich = tc.stats.channel
                                         netwk = tc.stats.network
-                                        if stt.select(station=ss, channel=ich).__nonzero__():
-                                            ttt = stt.select(station=ss, channel=ich)[0]
+                                        if template_stream.select(station=ss, channel=ich).__nonzero__():
+                                            ttt = template_stream.select(station=ss, channel=ich)[0]
                                             uts = UTCDateTime(ttt.stats.starttime).timestamp
                                             utr = UTCDateTime(reft).timestamp
                                             timestart = timex - tdifmin + (uts - utr)

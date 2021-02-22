@@ -2,12 +2,47 @@ import os
 import os.path
 import datetime
 from math import log10
+from pathlib import Path
 
 import numpy as np
 import logging
 from obspy import read, Stream, Trace
 from obspy.signal.cross_correlation import correlate_template
 from yaml import load, FullLoader
+
+
+def get_chunk_stream(template_stream, day, t1, t2, settings):
+    stream_df = Stream()
+    for tr in template_stream:
+        cont_dir = Path(settings['cont_dir'])
+        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            with filepath.open('rb') as file:
+                st = read(file, starttime=t1, endtime=t2, dtype="float32")
+            if len(st) != 0:
+                st.merge(method=1, fill_value=0)
+                tc = st[0]
+                stat = tc.stats.station
+                chan = tc.stats.channel
+                tc.detrend("constant")
+                # 24h continuous trace starts 00 h 00 m 00.0s
+                trim_fill(tc, t1, t2)
+                tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
+                # store detrended and filtered continuous data in a Stream
+                stream_df += Stream(traces=[tc])
+    return stream_df
+
+def get_template_stream(itemp, travel_times, settings):
+    template_stream = Stream()
+    temp_dir = Path(settings['temp_dir'])
+    v = sorted(travel_times, key=lambda x: float(travel_times[x]))[0:settings['chan_max']]
+    for vvc in v:
+        n_net, n_sta, n_chn = vvc.split(".")
+        filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
+        with filepath.open('rb') as file:
+            logging.debug(f"Reading {filepath}")
+            template_stream += read(file, dtype="float32")
+    return template_stream
 
 
 def listdays(start, stop):
@@ -92,6 +127,7 @@ def rolling_window(a, window):
 # itemp = template number, nn =  network code, ss = station code,
 # ich = channel code, stream_df = Stream() object as defined in obspy library
 def process_input(template_directory, itemp, nn, ss, ich, stream_df):
+    template_directory = Path(template_directory)
     template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
     st_cft = Stream()
     if os.path.isfile(template_path):
