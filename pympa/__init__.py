@@ -7,18 +7,23 @@ import numpy as np
 import logging
 from obspy import read, Stream, Trace
 from obspy.signal.cross_correlation import correlate_template
+from yaml import load, FullLoader
 
 
-def listdays(year, month, day, period):
-    """Create a list of days for scanning by templates"""
-    init = datetime.datetime(year=year, month=month, day=day)
-    for n in range(period):
-        yield init + datetime.timedelta(days=n)
+def listdays(start, stop):
+    date = start
+    while date < stop:
+        yield date
+        date += datetime.timedelta(days=1)
 
+
+def read_settings(par):
+    # read 'parameters24' file to setup useful variables
+    with open(par) as file:
+        settings = load(file, FullLoader)
+    return settings
 
 def read_parameters(par):
-    # read 'parameters24' file to setup useful variables
-
     with open(par) as fp:
         data = fp.read().splitlines()
 
@@ -86,19 +91,19 @@ def rolling_window(a, window):
 
 # itemp = template number, nn =  network code, ss = station code,
 # ich = channel code, stream_df = Stream() object as defined in obspy library
-def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
-    temp_file = f"{itemp}.{nn}.{ss}..{ich}.mseed"
-    finpt = f"{temp_dir}{temp_file}"
+def process_input(template_directory, itemp, nn, ss, ich, stream_df):
+    template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
     st_cft = Stream()
-    if os.path.isfile(finpt):
-        tsize = os.path.getsize(finpt)
+    if os.path.isfile(template_path):
+        tsize = os.path.getsize(template_path)
         if tsize > 0:
             # print "ok template exist and not empty"
-            st_temp = read(finpt, dtype="float32")
+            with template_path.open('rb') as template_file:
+                st_temp = read(template_file, dtype="float32")
             tt = st_temp[0]
             # continuous data are stored in stream_df
             sc = stream_df.select(station=ss, channel=ich)
-            if sc.__nonzero__():
+            if sc:
                 tc = sc[0]
                 fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
                 fct = np.nan_to_num(fct)
@@ -114,7 +119,7 @@ def process_input(temp_dir, itemp, nn, ss, ich, stream_df):
             else:
                 logging.debug("No stream is found")
         else:
-            logging.debug(f"Template event is empty {finpt}")
+            logging.debug(f"{template_path} is empty")
     return st_cft
 
 

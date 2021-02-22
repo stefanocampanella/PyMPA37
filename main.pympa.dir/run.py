@@ -33,17 +33,16 @@
 import itertools
 import logging
 import os.path
+from pathlib import Path
 from time import perf_counter as timer
 
 import numpy as np
 from obspy import read, Stream
 from obspy.core import UTCDateTime
 from obspy.core.event import read_events
-from obspy.io.quakeml.core import _is_quakeml
-from obspy.io.zmap.core import _is_zmap
 from obspy.signal.trigger import coincidence_trigger
 
-from pympa import read_parameters, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
+from pympa import read_parameters, read_settings, listdays, trim_fill, stack, mad, process_input, mag_detect, reject_moutliers, csc
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
@@ -51,54 +50,40 @@ if __name__ == '__main__':
                         format='%(levelname)s: %(message)s')
     start_time = timer()
     # read 'parameters24' file to setup useful variables
-    [stations,
-     channels,
-     networks,
-     lowpassf,
-     highpassf,
-     sample_tol,
-     cc_threshold,
-     nch_min,
-     temp_length,
-     utc_prec,
-     cont_dir,
-     temp_dir,
-     travel_dir,
-     dateperiod,
-     ev_catalog,
-     t_start,
-     t_stop,
-     factor_thre,
-     stdup,
-     stddown,
-     chan_max,
-     nchunk] = read_parameters("parameters24")
+    # [stations,
+    #  channels,
+    #  networks,
+    #  lowpassf,
+    #  highpassf,
+    #  sample_tol,
+    #  cc_threshold,
+    #  nch_min,
+    #  temp_length,
+    #  utc_prec,
+    #  cont_dir,
+    #  temp_dir,
+    #  travel_dir,
+    #  dateperiod,
+    #  ev_catalog,
+    #  t_start,
+    #  t_stop,
+    #  factor_thre,
+    #  stdup,
+    #  stddown,
+    #  chan_max,
+    #  nchunk] = read_parameters("parameters24")
+    settings = read_settings("settings.yaml")
 
     # set time precision for UTCDATETIME
-    UTCDateTime.DEFAULT_PRECISION = utc_prec
+    UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
+    cat = read_events(settings['ev_catalog'])
 
-    # read Catalog of Templates Events
-    logging.debug("event catalog should be ZMAP or QUAKEML")
-    if _is_zmap(ev_catalog):
-        logging.debug("reading ZMAP catalog")
-    elif _is_quakeml(ev_catalog):
-        logging.debug("reading QUAKEML catalog")
-    else:
-        logging.warning("Event catalog is neither ZMAP nor QUAKEML")
-    cat = read_events(ev_catalog)
-
-    # generate list of days "
-    year = int(dateperiod[0])
-    month = int(dateperiod[1])
-    day = int(dateperiod[2])
-    period = int(dateperiod[3])
-
-    for day in listdays(year, month, day, period):
+    for day in listdays(*settings['date_range']):
         # settings to cut exactly 24 hours file from without including
         # previous/next day
         logging.debug(f"Processing {day}")
 
-        for itemp in range(t_start, t_stop):
+        for itemp in range(*settings['template_range']):
             # open file containing detections
             logging.debug(f"itemp = {itemp}")
             # open statistics file for each detection
@@ -109,17 +94,22 @@ if __name__ == '__main__':
             # read ttimes, select the num_ttimes (parameters,
             # last line) channels
             # and read only these templates
-            with open(f"{travel_dir}{itemp}.ttimes", "r") as ttim:
+            travel_dir = Path(settings['travel_dir'])
+            with open(travel_dir / f"{itemp}.ttimes", "r") as ttim:
                 d = dict(x.rstrip().split(None, 1) for x in ttim)
-                v = sorted(d, key=lambda x: float(d[x]))[0:chan_max]
+                v = sorted(d, key=lambda x: float(d[x]))[0:settings['chan_max']]
 
+            temp_dir = Path(settings['temp_dir'])
             stt = Stream()
             for vvc in v:
                 n_net, n_sta, n_chn = vvc.split(".")
-                filename = f"{temp_dir}{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
-                logging.debug(f"Reading {filename}")
-                stt += read(filename, dtype="float32")
+                filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
+                with filepath.open('rb') as file:
+                    logging.debug(f"Reading {filepath}")
+                    stt += read(file, dtype="float32")
 
+            nch_min = settings['nch_min']
+            nchunk = settings['nchunk']
             if len(stt) >= nch_min:
                 h24 = 86400
                 chunk_start = UTCDateTime(day)
@@ -134,9 +124,11 @@ if __name__ == '__main__':
                     logging.debug(f"Processing chunk ({t1}, {t2})")
                     stream_df = Stream()
                     for tr in stt:
-                        finpc1 = f"{cont_dir}{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
-                        if os.path.exists(finpc1) and os.path.getsize(finpc1) > 0:
-                            st = read(finpc1, starttime=t1, endtime=t2, dtype="float32")
+                        cont_dir = Path(settings['cont_dir'])
+                        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
+                        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                            with filepath.open('rb') as file:
+                                st = read(file, starttime=t1, endtime=t2, dtype="float32")
                             if len(st) != 0:
                                 st.merge(method=1, fill_value=0)
                                 tc = st[0]
@@ -145,7 +137,7 @@ if __name__ == '__main__':
                                 tc.detrend("constant")
                                 # 24h continuous trace starts 00 h 00 m 00.0s
                                 trim_fill(tc, t1, t2)
-                                tc.filter("bandpass", freqmin=lowpassf, freqmax=highpassf, zerophase=True)
+                                tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
                                 # store detrended and filtered continuous data in a Stream
                                 stream_df += Stream(traces=[tc])
 
@@ -170,7 +162,7 @@ if __name__ == '__main__':
 
                         # clear global_variable
                         stream_cft = Stream()
-                        for nn, ss, ich in itertools.product(networks, stations, channels):
+                        for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
                             stream_cft += process_input(temp_dir, itemp, nn, ss, ich, stream_df)
 
                         # seconds in 24 hours
@@ -190,8 +182,8 @@ if __name__ == '__main__':
                             tdif[idx] = d[f"{net}.{sta}.{chan}"]
                             tstart[idx] = tc_cft.stats.starttime + tdif[idx]
                             tend[idx] = tstart[idx] + (h24 / nchunk) + 60
-                            ts = UTCDateTime(tstart[idx], precision=utc_prec)
-                            te = UTCDateTime(tend[idx], precision=utc_prec)
+                            ts = UTCDateTime(tstart[idx], precision=settings['utc_prec'])
+                            te = UTCDateTime(tend[idx], precision=settings['utc_prec'])
                             stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
 
                         # compute mean cross correlation from the stack of
@@ -199,7 +191,7 @@ if __name__ == '__main__':
                         tstart = min(tr.stats.starttime for tr in stall)
                         df = stall[0].stats.sampling_rate
                         npts = stall[0].stats.npts
-                        ccmad, tdifmin = stack(stall, df, tstart, d, npts, stdup, stddown, nch_min)
+                        ccmad, tdifmin = stack(stall, df, tstart, d, npts, settings['stdup'], settings['stddown'], nch_min)
                         logging.debug(f"tdifmin = {tdifmin}")
 
                         if tdifmin is not None:
@@ -207,7 +199,7 @@ if __name__ == '__main__':
                             tstda = mad(ccmad.data)
 
                             # define threshold as 9 times std  and quality index
-                            thresholdd = factor_thre * tstda
+                            thresholdd = settings['factor_thre'] * tstda
 
                             # Run coincidence trigger on a single CC trace resulting from the CFTs stack
                             # essential threshold parameters Cross correlation thresholds
@@ -244,7 +236,7 @@ if __name__ == '__main__':
                                  nch5,
                                  nch7,
                                  nch9,
-                                 channels_list] = csc(stall, stcc, trg, tstda, sample_tol, cc_threshold, nch_min)
+                                 channels_list] = csc(stall, stcc, trg, tstda, settings['sample_tol'], settings['cc_threshold'], nch_min)
 
                                 if int(nch) >= nch_min:
                                     nn = len(stream_df)
@@ -262,7 +254,7 @@ if __name__ == '__main__':
                                             uts = UTCDateTime(ttt.stats.starttime).timestamp
                                             utr = UTCDateTime(reft).timestamp
                                             timestart = timex - tdifmin + (uts - utr)
-                                            timend = timestart + temp_length
+                                            timend = timestart + settings['temp_length']
                                             ta = tc.copy()
                                             ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
                                             tid_c = f"{ss}.{ich}"

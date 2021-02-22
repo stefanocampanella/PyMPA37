@@ -1,0 +1,47 @@
+stations:
+  - APEC
+  - ATBU
+  - ATCA
+  - ATCC
+  - ATFO
+  - ATLO
+  - ATPC
+  - ATPI
+  - ATSC
+  - ATVO
+  - BADI
+  - FOSV
+  - FRON
+  - MURB
+  - NARO
+  - PARC
+  - PIEI
+  - PE3
+  - SSFR
+channels:
+  - EHE
+  - EHN
+  - EHZ
+  - HHE
+  - HHN
+  - HHZ
+networks:
+- IV
+lowpassf: 3.0
+highpassf: 8.0
+sample_tol: 6
+cc_threshold: 0.35
+nch_min: 6
+temp_length: 5
+utc_prec: 6
+cont_dir: 24h
+temp_dir: template
+travel_dir: ttimes
+date_range: [2010-07-23, 2010-07-24]
+ev_catalog: templates.zmap
+template_range: [200, 204]
+factor_thre: 8
+stdup: 1.5
+stddown: 0.25
+chan_max: 12
+nchunk: 6
