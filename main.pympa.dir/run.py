@@ -33,7 +33,7 @@
 import itertools
 import logging
 import os.path
-from time import perf_counter
+from timeit import default_timer as timer
 
 import numpy as np
 from obspy import read, Stream
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     logging.basicConfig(filename='run.log',
                         filemode='w',
                         format='%(levelname)s: %(message)s')
-    # start_time = perf_counter()
+    start_time = timer()
     # read 'parameters24' file to setup useful variables
     [stations,
      channels,
@@ -282,4 +282,4 @@ if __name__ == '__main__':
                         logging.info(f"{day} {itemp} {t1} {t2}  num.  24h channels lower than nch_min\n")
             else:
                 logging.info(f"{day} {itemp} num.  templates lower than nch_min\n")
-    # print(" elapsed time ", perf_counter() - start_time, " seconds")
+    print(" elapsed time ", timer() - start_time, " seconds")
