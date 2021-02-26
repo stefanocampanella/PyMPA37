@@ -11,12 +11,28 @@ from obspy import read, Stream, Trace
 from obspy.signal.cross_correlation import correlate_template
 from yaml import load, FullLoader
 
+
+def get_stall(itemp, chunk_stream, travel_times, settings):
+    h24 = 86400
+    nchunk = settings['nchunk']
+    stall = Stream()
+    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
+        if tc_cft := process_input(itemp, nn, ss, ich, chunk_stream, settings):
+            # waveforms should have the same number of npts
+            # and should be synchronized to the S-wave travel time
+            tstart = tc_cft.stats.starttime + float(travel_times[f"{nn}.{ss}.{ich}"])
+            tend = tstart + (h24 / nchunk) + 60
+            stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
+    return stall
+
+
 def get_correlation_stream(itemp, chunk_stream, settings):
     stream_cft = Stream()
     for nn, ss, ich in itertools.product(settings['networks'], settings['stations'],
                                          settings['channels']):
-        stream_cft += process_input(settings['temp_dir'], itemp, nn, ss, ich, chunk_stream)
+        stream_cft += process_input(itemp, nn, ss, ich, chunk_stream, settings)
     return stream_cft
+
 
 def get_chunk_stream(template_stream, day, t1, t2, settings):
     stream_df = Stream()
@@ -29,8 +45,6 @@ def get_chunk_stream(template_stream, day, t1, t2, settings):
             if len(st) != 0:
                 st.merge(method=1, fill_value=0)
                 tc = st[0]
-                stat = tc.stats.station
-                chan = tc.stats.channel
                 tc.detrend("constant")
                 # 24h continuous trace starts 00 h 00 m 00.0s
                 trim_fill(tc, t1, t2)
@@ -38,6 +52,7 @@ def get_chunk_stream(template_stream, day, t1, t2, settings):
                 # store detrended and filtered continuous data in a Stream
                 stream_df += Stream(traces=[tc])
     return stream_df
+
 
 def get_template_stream(itemp, travel_times, settings):
     template_stream = Stream()
@@ -65,60 +80,6 @@ def read_settings(par):
         settings = load(file, FullLoader)
     return settings
 
-def read_parameters(par):
-    with open(par) as fp:
-        data = fp.read().splitlines()
-
-        stations = data[23].split(" ")
-        logging.debug(f"Stations: {stations}")
-        channels = data[24].split(" ")
-        logging.debug(f"Channels: {channels}")
-        networks = data[25].split(" ")
-        logging.debug(f"Networks: {networks}")
-        lowpassf = float(data[26])
-        highpassf = float(data[27])
-        sample_tol = int(data[28])
-        cc_threshold = float(data[29])
-        nch_min = int(data[30])
-        temp_length = float(data[31])
-        utc_prec = int(data[32])
-        cont_dir = "./" + data[33] + "/"
-        temp_dir = "./" + data[34] + "/"
-        travel_dir = "./" + data[35] + "/"
-        dateperiod = data[36].split(" ")
-        ev_catalog = str(data[37])
-        start_itemp = int(data[38])
-        logging.debug(f"Starting template = {start_itemp}")
-        stop_itemp = int(data[39])
-        logging.debug(f"Ending template = {stop_itemp}")
-        factor_thre = int(data[40])
-        stdup = float(data[41])
-        stddown = float(data[42])
-        chan_max = int(data[43])
-        nchunk = int(data[44])
-        return (stations,
-                channels,
-                networks,
-                lowpassf,
-                highpassf,
-                sample_tol,
-                cc_threshold,
-                nch_min,
-                temp_length,
-                utc_prec,
-                cont_dir,
-                temp_dir,
-                travel_dir,
-                dateperiod,
-                ev_catalog,
-                start_itemp,
-                stop_itemp,
-                factor_thre,
-                stdup,
-                stddown,
-                chan_max,
-                nchunk)
-
 
 def trim_fill(tc, t1, t2):
     tc.trim(starttime=t1, endtime=t2, pad=True, fill_value=0)
@@ -133,13 +94,12 @@ def rolling_window(a, window):
 
 # itemp = template number, nn =  network code, ss = station code,
 # ich = channel code, stream_df = Stream() object as defined in obspy library
-def process_input(template_directory, itemp, nn, ss, ich, stream_df):
-    template_directory = Path(template_directory)
+def process_input(itemp, nn, ss, ich, stream_df, settings):
+    template_directory = Path(settings['temp_dir'])
     template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
     st_cft = Stream()
     if os.path.isfile(template_path):
-        tsize = os.path.getsize(template_path)
-        if tsize > 0:
+        if os.path.getsize(template_path) > 0:
             # print "ok template exist and not empty"
             with template_path.open('rb') as template_file:
                 st_temp = read(template_file, dtype="float32")
@@ -158,7 +118,7 @@ def process_input(template_directory, itemp, nn, ss, ich, stream_df):
                          "npts": len(fct),
                          "sampling_rate": tc.stats.sampling_rate,
                          "mseed": {"dataquality": "D"}}
-                st_cft = Stream(traces=Trace(data=fct, header=stats))
+                st_cft = Stream(Trace(data=fct, header=stats))
             else:
                 logging.debug("No stream is found")
         else:
@@ -170,13 +130,16 @@ def quality_cft(trac):
     return np.nanstd(abs(trac.data))
 
 
-def stack(stall, df, tstart, d, npts, stdup, stddown, nch_min):
+def stack(stall, df, tstart, d, npts, settings):
     """
     Function to stack traces in a stream with different trace.id and
     different starttime but the same number of datapoints.
     Returns a trace having as starttime
     the earliest startime within the stream
     """
+    stdup = settings['stdup']
+    stddown = settings['stddown']
+    nch_min = settings['nch_min']
     std_trac = np.empty(len(stall))
     td = np.fromiter((quality_cft(tr) for tr in stall), dtype=float)
     avestd = np.nanmean(std_trac)

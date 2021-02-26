@@ -30,7 +30,6 @@
 # Python "math" libraries
 # Python "bottleneck" utilities to speed up numpy array operations
 #
-import itertools
 from time import perf_counter as timer
 
 from obspy.core import UTCDateTime
@@ -89,9 +88,7 @@ if __name__ == '__main__':
                     chunk_stream = get_chunk_stream(template_stream, day, t1, t2, settings)
 
                     if len(chunk_stream) >= nch_min:
-
                         correlation_stream = get_correlation_stream(itemp, chunk_stream, settings)
-
                         # seconds in 24 hours
                         nfile = len(correlation_stream)
                         tstart = np.empty(nfile)
@@ -115,17 +112,16 @@ if __name__ == '__main__':
 
                         # compute mean cross correlation from the stack of
                         # CFTs (see stack function)
+                        # stall = get_stall(itemp, chunk_stream, travel_times, settings)
                         tstart = min(tr.stats.starttime for tr in stall)
                         df = stall[0].stats.sampling_rate
                         npts = stall[0].stats.npts
-                        ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings['stdup'],
-                                               settings['stddown'], nch_min)
+                        ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings)
                         logging.debug(f"tdifmin = {tdifmin}")
 
                         # find minimum time to recover origin time
                         min_time_value = min(float(v) for v in travel_times.values())
-                        # reference time to be used for
-                        # retrieving time synchronization
+                        # reference time to be used for retrieving time synchronization
                         reft = min(tr.stats.starttime for tr in template_stream)
                         damaxat = {}
                         for il, tr in enumerate(template_stream):
