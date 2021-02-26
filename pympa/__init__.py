@@ -96,7 +96,6 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
                         for il, tc in enumerate(chunk_stream):
                             ss = tc.stats.station
                             ich = tc.stats.channel
-                            netwk = tc.stats.network
                             if template_stream.select(station=ss, channel=ich).__nonzero__():
                                 ttt = template_stream.select(station=ss, channel=ich)[0]
                                 uts = UTCDateTime(ttt.stats.starttime).timestamp
@@ -121,8 +120,8 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
                         events_list.append(record)
     return events_list
 
+
 def stack_all(itemp, chunk_stream, travel_times, settings):
-    utc_prec = settings['utc_prec']
     h24 = 86400
     nchunk = settings['nchunk']
     correlation_stream = get_correlation_stream(itemp, chunk_stream, settings)
@@ -143,13 +142,11 @@ def stack_all(itemp, chunk_stream, travel_times, settings):
         tdif[idx] = travel_times[f"{net}.{sta}.{chan}"]
         tstart[idx] = tc_cft.stats.starttime + tdif[idx]
         tend[idx] = tstart[idx] + (h24 / nchunk) + 60
-        ts = UTCDateTime(tstart[idx], precision=settings['utc_prec'])
-        te = UTCDateTime(tend[idx], precision=settings['utc_prec'])
+        ts = UTCDateTime(tstart[idx])
+        te = UTCDateTime(tend[idx])
         stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
 
-    # compute mean cross correlation from the stack of
-    # CFTs (see stack function)
-    # stall = get_stall(itemp, chunk_stream, travel_times, settings)
+    # compute mean cross correlation from the stack of CFTs (see stack function)
     tstart = min(tr.stats.starttime for tr in stall)
     df = stall[0].stats.sampling_rate
     npts = stall[0].stats.npts
