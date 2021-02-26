@@ -47,7 +47,7 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
                 thr_coincidence_sum = 1.0
                 similarity_thresholds = {"BH": thr_on}
                 trigger_type = None
-                stcc = Stream(traces=[ccmad])
+                stcc = Stream(traces=ccmad)
                 triglist = coincidence_trigger(trigger_type,
                                                thr_on,
                                                thr_off,
@@ -83,16 +83,14 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
                      nch5,
                      nch7,
                      nch9,
-                     channels_list] = csc(stall, stcc, trg, tstda, settings['sample_tol'],
-                                          settings['cc_threshold'], nch_min)
+                     channels_list] = csc(stall, stcc, trg, tstda, settings)
 
-                    if int(nch) >= nch_min:
+                    if nch >= nch_min:
                         nn = len(chunk_stream)
                         md = np.zeros(nn)
                         # for each trigger, detrended, and filtered continuous
                         # data channels are trimmed and amplitude useful to
                         # estimate magnitude is measured.
-                        timex = UTCDateTime(tt)
                         for il, tc in enumerate(chunk_stream):
                             ss = tc.stats.station
                             ich = tc.stats.channel
@@ -102,15 +100,14 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
                                 # reference time to be used for retrieving time synchronization
                                 reft = min(tr.stats.starttime for tr in template_stream)
                                 utr = UTCDateTime(reft).timestamp
-                                timestart = timex - tdifmin + (uts - utr)
+                                timestart = UTCDateTime(tt) - tdifmin + (uts - utr)
                                 timend = timestart + settings['temp_length']
                                 ta = tc.copy()
                                 ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-                                tid_c = f"{ss}.{ich}"
                                 damaxac = max(abs(ta.data))
-                                dct = damaxac
+                                tid_c = f"{ss}.{ich}"
                                 dtt = damaxat[tid_c]
-                                if dct != 0 and dtt != 0:
+                                if damaxac != 0 and dtt != 0:
                                     md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
                         mdr = reject_moutliers(md, 1)
                         mm = round(mdr.mean(), 2)
@@ -318,7 +315,7 @@ def stack(stall, df, tstart, d, npts, settings):
     return Trace(data=data, header=header), tdifmin
 
 
-def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min):
+def csc(stall, stcc, trg, tstda, settings):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -328,6 +325,10 @@ def csc(stall, stcc, trg, tstda, sample_tolerance, single_channelcft, nch_min):
     """
     # important parameters: a sample_tolerance less than 2 results often
     # in wrong magnitudes
+    sample_tolerance = settings['sample_tol']
+    single_channelcft = settings['cc_threshold']
+    nch_min = settings['nch_min']
+
     trigger_time = trg["time"]
     tcft = stcc[0]
     t0_tcft = tcft.stats.starttime
