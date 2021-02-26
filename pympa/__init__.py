@@ -13,10 +13,8 @@ from obspy.signal.trigger import coincidence_trigger
 from yaml import load, FullLoader
 
 
-def find_events(day, itemp, template_stream, travel_times, mt, settings):
+def list_chunks(day, nchunk):
     h24 = 86400
-    nchunk = settings['nchunk']
-    nch_min = settings['nch_min']
     chunk_start = UTCDateTime(day)
     end_time = chunk_start + h24
     chunks = []
@@ -24,97 +22,104 @@ def find_events(day, itemp, template_stream, travel_times, mt, settings):
         chunk_end = min(chunk_start + h24 / nchunk, end_time)
         chunks.append((chunk_start, chunk_end))
         chunk_start += h24 / nchunk
+    return chunks
 
+
+def find_events_(itemp, template_stream, chunk_stream, travel_times, mt, settings):
+    nch_min = settings['nch_min']
+    events_list = []
+    if len(chunk_stream) >= nch_min:
+        stall, ccmad, tdifmin = stack_all(itemp, chunk_stream, travel_times, settings)
+
+        if tdifmin is not None:
+            # compute mean absolute deviation of abs(ccmad)
+            tstda = mad(ccmad.data)
+
+            # define threshold as 9 times std  and quality index
+            threshold = settings['factor_thre'] * tstda
+
+            # Run coincidence trigger on a single CC trace resulting from the CFTs stack
+            # essential threshold parameters Cross correlation thresholds
+            stcc = Stream(traces=ccmad)
+            triglist = coincidence_trigger(None,
+                                           threshold,
+                                           threshold - 0.15 * threshold,
+                                           stcc,
+                                           1.0,
+                                           trace_ids=None,
+                                           similarity_thresholds={"BH": threshold},
+                                           delete_long_trigger=False,
+                                           trigger_off_extension=3.0,
+                                           details=True)
+
+            # find minimum time to recover origin time
+            min_time_value = min(float(v) for v in travel_times.values())
+            damaxat = {}
+            for il, tr in enumerate(template_stream):
+                sta_t = tr.stats.station
+                cha_t = tr.stats.channel
+                tid_t = "%s.%s" % (sta_t, cha_t)
+                damaxat[tid_t] = max(abs(tr.data))
+            for itrig, trg in enumerate(triglist):
+                # tdifmin is computed for contributing channels within the stack function
+                if tdifmin == min_time_value:
+                    tt = trg["time"] + min_time_value
+                else:
+                    diff_time = min_time_value - tdifmin
+                    tt = trg["time"] + diff_time + min_time_value
+                [nch,
+                 cft_ave,
+                 crt,
+                 cft_ave_trg,
+                 crt_trg,
+                 nch3,
+                 nch5,
+                 nch7,
+                 nch9,
+                 channels_list] = csc(stall, stcc, trg, tstda, settings)
+
+                if nch >= nch_min:
+                    nn = len(chunk_stream)
+                    md = np.zeros(nn)
+                    # for each trigger, detrended, and filtered continuous
+                    # data channels are trimmed and amplitude useful to
+                    # estimate magnitude is measured.
+                    for il, tc in enumerate(chunk_stream):
+                        ss = tc.stats.station
+                        ich = tc.stats.channel
+                        if template_stream.select(station=ss, channel=ich).__nonzero__():
+                            ttt = template_stream.select(station=ss, channel=ich)[0]
+                            uts = UTCDateTime(ttt.stats.starttime).timestamp
+                            # reference time to be used for retrieving time synchronization
+                            reft = min(tr.stats.starttime for tr in template_stream)
+                            utr = UTCDateTime(reft).timestamp
+                            timestart = UTCDateTime(tt) - tdifmin + (uts - utr)
+                            timend = timestart + settings['temp_length']
+                            ta = tc.copy()
+                            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
+                            damaxac = max(abs(ta.data))
+                            tid_c = f"{ss}.{ich}"
+                            dtt = damaxat[tid_c]
+                            if damaxac != 0 and dtt != 0:
+                                md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
+                    mdr = reject_moutliers(md, 1)
+                    mm = round(mdr.mean(), 2)
+                    record = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
+                              cft_ave, crt, cft_ave_trg, crt_trg,
+                              nch3, nch5, nch7, nch9, channels_list)
+                    events_list.append(record)
+    return events_list
+
+
+def find_events(day, itemp, template_stream, travel_times, mt, settings):
+    nchunk = settings['nchunk']
+    chunks = list_chunks(day, nchunk)
     events_list = []
     for t1, t2 in chunks:
         logging.debug(f"Processing chunk ({t1}, {t2})")
         chunk_stream = get_chunk_stream(template_stream, day, t1, t2, settings)
+        events_list.extend(find_events_(itemp, template_stream, chunk_stream, travel_times, mt, settings))
 
-        if len(chunk_stream) >= nch_min:
-            stall, ccmad, tdifmin = stack_all(itemp, chunk_stream, travel_times, settings)
-
-            if tdifmin is not None:
-                # compute mean absolute deviation of abs(ccmad)
-                tstda = mad(ccmad.data)
-
-                # define threshold as 9 times std  and quality index
-                thresholdd = settings['factor_thre'] * tstda
-
-                # Run coincidence trigger on a single CC trace resulting from the CFTs stack
-                # essential threshold parameters Cross correlation thresholds
-                thr_on = thresholdd
-                thr_off = thresholdd - 0.15 * thresholdd
-                thr_coincidence_sum = 1.0
-                similarity_thresholds = {"BH": thr_on}
-                trigger_type = None
-                stcc = Stream(traces=ccmad)
-                triglist = coincidence_trigger(trigger_type,
-                                               thr_on,
-                                               thr_off,
-                                               stcc,
-                                               thr_coincidence_sum,
-                                               trace_ids=None,
-                                               similarity_thresholds=similarity_thresholds,
-                                               delete_long_trigger=False,
-                                               trigger_off_extension=3.0,
-                                               details=True)
-
-                # find minimum time to recover origin time
-                min_time_value = min(float(v) for v in travel_times.values())
-                damaxat = {}
-                for il, tr in enumerate(template_stream):
-                    sta_t = tr.stats.station
-                    cha_t = tr.stats.channel
-                    tid_t = "%s.%s" % (sta_t, cha_t)
-                    damaxat[tid_t] = max(abs(tr.data))
-                for itrig, trg in enumerate(triglist):
-                    # tdifmin is computed for contributing channels within the stack function
-                    if tdifmin == min_time_value:
-                        tt = trg["time"] + min_time_value
-                    else:
-                        diff_time = min_time_value - tdifmin
-                        tt = trg["time"] + diff_time + min_time_value
-                    [nch,
-                     cft_ave,
-                     crt,
-                     cft_ave_trg,
-                     crt_trg,
-                     nch3,
-                     nch5,
-                     nch7,
-                     nch9,
-                     channels_list] = csc(stall, stcc, trg, tstda, settings)
-
-                    if nch >= nch_min:
-                        nn = len(chunk_stream)
-                        md = np.zeros(nn)
-                        # for each trigger, detrended, and filtered continuous
-                        # data channels are trimmed and amplitude useful to
-                        # estimate magnitude is measured.
-                        for il, tc in enumerate(chunk_stream):
-                            ss = tc.stats.station
-                            ich = tc.stats.channel
-                            if template_stream.select(station=ss, channel=ich).__nonzero__():
-                                ttt = template_stream.select(station=ss, channel=ich)[0]
-                                uts = UTCDateTime(ttt.stats.starttime).timestamp
-                                # reference time to be used for retrieving time synchronization
-                                reft = min(tr.stats.starttime for tr in template_stream)
-                                utr = UTCDateTime(reft).timestamp
-                                timestart = UTCDateTime(tt) - tdifmin + (uts - utr)
-                                timend = timestart + settings['temp_length']
-                                ta = tc.copy()
-                                ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-                                damaxac = max(abs(ta.data))
-                                tid_c = f"{ss}.{ich}"
-                                dtt = damaxat[tid_c]
-                                if damaxac != 0 and dtt != 0:
-                                    md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
-                        mdr = reject_moutliers(md, 1)
-                        mm = round(mdr.mean(), 2)
-                        record = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
-                                  cft_ave, crt, cft_ave_trg, crt_trg,
-                                  nch3, nch5, nch7, nch9, channels_list)
-                        events_list.append(record)
     return events_list
 
 
@@ -151,20 +156,6 @@ def stack_all(itemp, chunk_stream, travel_times, settings):
     logging.debug(f"tdifmin = {tdifmin}")
 
     return stall, ccmad, tdifmin
-
-
-def get_stall(itemp, chunk_stream, travel_times, settings):
-    h24 = 86400
-    nchunk = settings['nchunk']
-    stall = Stream()
-    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
-        if tc_cft := process_input(itemp, nn, ss, ich, chunk_stream, settings):
-            # waveforms should have the same number of npts
-            # and should be synchronized to the S-wave travel time
-            tstart = tc_cft.stats.starttime + float(travel_times[f"{nn}.{ss}.{ich}"])
-            tend = tstart + (h24 / nchunk) + 60
-            stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
-    return stall
 
 
 def get_correlation_stream(itemp, chunk_stream, settings):
