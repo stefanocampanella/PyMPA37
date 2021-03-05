@@ -128,7 +128,7 @@ def stack_all(itemp, chunk_stream, travel_times, settings):
         # and should be synchronized to the S-wave travel time
         tdif[idx] = travel_times[f"{net}.{sta}.{chan}"]
         tstart[idx] = tc_cft.stats.starttime + tdif[idx]
-        tend[idx] = tstart[idx] + (h24 / nchunk) + 60
+        tend[idx] = tstart[idx] + (h24 / nchunk)
         ts = UTCDateTime(tstart[idx])
         te = UTCDateTime(tend[idx])
         stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
