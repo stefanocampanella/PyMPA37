@@ -13,15 +13,13 @@ from obspy.signal.trigger import coincidence_trigger
 
 
 def list_chunks(day, nchunk):
-    h24 = 86400
     chunk_start = UTCDateTime(day)
-    end_time = chunk_start + h24
-    chunks = []
+    end_time = chunk_start + datetime.timedelta(days=1)
+    delta = datetime.timedelta(days=1) / nchunk
     while chunk_start < end_time:
-        chunk_end = min(chunk_start + h24 / nchunk, end_time)
-        chunks.append((chunk_start, chunk_end))
-        chunk_start += h24 / nchunk
-    return chunks
+        chunk_end = min(chunk_start + delta, end_time)
+        yield chunk_start, chunk_end
+        chunk_start += delta
 
 
 def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
