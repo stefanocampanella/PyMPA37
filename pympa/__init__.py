@@ -10,7 +10,6 @@ import logging
 from obspy import read, Stream, Trace, UTCDateTime
 from obspy.signal.cross_correlation import correlate_template
 from obspy.signal.trigger import coincidence_trigger
-from yaml import load, FullLoader
 
 
 def list_chunks(day, nchunk):
@@ -25,11 +24,11 @@ def list_chunks(day, nchunk):
     return chunks
 
 
-def find_events_(itemp, template_stream, chunk_stream, travel_times, mt, settings):
+def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
     nch_min = settings['nch_min']
     events_list = []
-    if len(chunk_stream) >= nch_min:
-        stall, ccmad, tdifmin = stack_all(itemp, chunk_stream, travel_times, settings)
+    if len(continuous_stream) >= nch_min:
+        stall, ccmad, tdifmin = stack_all(itemp, continuous_stream, travel_times, settings)
 
         if tdifmin is not None:
             # compute mean absolute deviation of abs(ccmad)
@@ -79,12 +78,12 @@ def find_events_(itemp, template_stream, chunk_stream, travel_times, mt, setting
                  channels_list] = csc(stall, stcc, trg, tstda, settings)
 
                 if nch >= nch_min:
-                    nn = len(chunk_stream)
+                    nn = len(continuous_stream)
                     md = np.zeros(nn)
                     # for each trigger, detrended, and filtered continuous
                     # data channels are trimmed and amplitude useful to
                     # estimate magnitude is measured.
-                    for il, tc in enumerate(chunk_stream):
+                    for il, tc in enumerate(continuous_stream):
                         ss = tc.stats.station
                         ich = tc.stats.channel
                         if template_stream.select(station=ss, channel=ich).__nonzero__():
@@ -108,18 +107,6 @@ def find_events_(itemp, template_stream, chunk_stream, travel_times, mt, setting
                               cft_ave, crt, cft_ave_trg, crt_trg,
                               nch3, nch5, nch7, nch9, channels_list)
                     events_list.append(record)
-    return events_list
-
-
-def find_events(day, itemp, template_stream, travel_times, mt, settings):
-    nchunk = settings['nchunk']
-    chunks = list_chunks(day, nchunk)
-    events_list = []
-    for t1, t2 in chunks:
-        logging.debug(f"Processing chunk ({t1}, {t2})")
-        chunk_stream = get_chunk_stream(template_stream, day, t1, t2, settings)
-        events_list.extend(find_events_(itemp, template_stream, chunk_stream, travel_times, mt, settings))
-
     return events_list
 
 
@@ -160,29 +147,28 @@ def stack_all(itemp, chunk_stream, travel_times, settings):
 
 def get_correlation_stream(itemp, chunk_stream, settings):
     stream_cft = Stream()
-    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'],
+    for nn, ss, ich in itertools.product(settings['networks'],
+                                         settings['stations'],
                                          settings['channels']):
         stream_cft += process_input(itemp, nn, ss, ich, chunk_stream, settings)
     return stream_cft
 
 
-def get_chunk_stream(template_stream, day, t1, t2, settings):
+def get_continuous_stream(template_stream, day, t1, t2, settings):
+    cont_dir = Path(settings['cont_dir'])
     stream_df = Stream()
     for tr in template_stream:
-        cont_dir = Path(settings['cont_dir'])
         filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             with filepath.open('rb') as file:
-                st = read(file, starttime=t1, endtime=t2, dtype="float32")
-            if len(st) != 0:
-                st.merge(method=1, fill_value=0)
-                tc = st[0]
-                tc.detrend("constant")
-                # 24h continuous trace starts 00 h 00 m 00.0s
-                trim_fill(tc, t1, t2)
-                tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
-                # store detrended and filtered continuous data in a Stream
-                stream_df += Stream(traces=[tc])
+                st = read(file, dtype="float32", starttime=t1, endtime=t2)
+                if st:
+                    st.merge(method=1, fill_value=0)
+                    tc = st[0]
+                    tc.detrend("constant")
+                    tc.trim(starttime=t1, endtime=t2, pad=True, fill_value=0)
+                    tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
+                    stream_df += Stream(traces=[tc])
     return stream_df
 
 
@@ -204,24 +190,6 @@ def listdays(start, stop):
     while date < stop:
         yield date
         date += datetime.timedelta(days=1)
-
-
-def read_settings(par):
-    # read 'parameters24' file to setup useful variables
-    with open(par) as file:
-        settings = load(file, FullLoader)
-    return settings
-
-
-def trim_fill(tc, t1, t2):
-    tc.trim(starttime=t1, endtime=t2, pad=True, fill_value=0)
-    return tc
-
-
-def rolling_window(a, window):
-    shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
-    strides = a.strides + (a.strides[-1],)
-    return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
 
 
 # itemp = template number, nn =  network code, ss = station code,
@@ -258,10 +226,6 @@ def process_input(itemp, nn, ss, ich, stream_df, settings):
     return st_cft
 
 
-def quality_cft(trac):
-    return np.nanstd(abs(trac.data))
-
-
 def stack(stall, df, tstart, d, npts, settings):
     """
     Function to stack traces in a stream with different trace.id and
@@ -273,7 +237,7 @@ def stack(stall, df, tstart, d, npts, settings):
     stddown = settings['stddown']
     nch_min = settings['nch_min']
     std_trac = np.empty(len(stall))
-    td = np.fromiter((quality_cft(tr) for tr in stall), dtype=float)
+    td = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
     avestd = np.nanmean(std_trac)
     avestdup = avestd * stdup
     avestddw = avestd * stddown

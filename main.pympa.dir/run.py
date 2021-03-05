@@ -35,13 +35,15 @@ from time import perf_counter as timer
 from pathlib import Path
 from obspy import UTCDateTime
 from obspy.core.event import read_events
+from yaml import load, FullLoader
 
-from pympa import read_settings, listdays, get_template_stream, find_events
+from pympa import listdays, list_chunks, get_continuous_stream, get_template_stream, find_events
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log', filemode='w', format='%(levelname)s: %(message)s')
     start_time = timer()
-    settings = read_settings("settings.yaml")
+    with open('settings.yaml') as file:
+        settings = load(file, FullLoader)
     catalog = read_events(settings['ev_catalog'])
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
@@ -54,7 +56,11 @@ if __name__ == '__main__':
             template_stream = get_template_stream(itemp, travel_times, settings)
             if len(template_stream) >= settings['nch_min']:
                 mt = catalog[itemp].magnitudes[0].mag
-                events_list.extend(find_events(day, itemp, template_stream, travel_times, mt, settings))
+                for chunk in list_chunks(day, settings['nchunk']):
+                    logging.debug(f"Processing chunk ({chunk})")
+                    chunk_stream = get_continuous_stream(template_stream, day, *chunk, settings)
+                    new_events = find_events(itemp, template_stream, chunk_stream, travel_times, mt, settings)
+                    events_list.extend(new_events)
             else:
                 logging.info(f"{day}, not enough channels for template {itemp} (nch_min: {settings['nch_min']}")
 
