@@ -25,7 +25,8 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
     nch_min = settings['nch_min']
     events_list = []
     if len(continuous_stream) >= nch_min:
-        stall, ccmad, tdifmin = stack_all(itemp, continuous_stream, travel_times, settings)
+        correlation_stream = get_correlation_stream(itemp, continuous_stream, settings)
+        stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
 
         if tdifmin is not None:
             # compute mean absolute deviation of abs(ccmad)
@@ -105,34 +106,6 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
                               nch3, nch5, nch7, nch9, channels_list)
                     events_list.append(record)
     return events_list
-
-
-def stack_all(itemp, chunk_stream, travel_times, settings):
-    h24 = 86400
-    nchunk = settings['nchunk']
-    correlation_stream = get_correlation_stream(itemp, chunk_stream, settings)
-    nfile = len(correlation_stream)
-    tstart = np.empty(nfile)
-    stall = Stream()
-    for idx, tc_cft in enumerate(correlation_stream):
-        sta = tc_cft.stats.station
-        chan = tc_cft.stats.channel
-        net = tc_cft.stats.network
-        tdif = travel_times[f"{net}.{sta}.{chan}"]
-        tstart[idx] = tc_cft.stats.starttime + float(tdif)
-        tend = tstart[idx] + (h24 / nchunk)
-        ts = UTCDateTime(tstart[idx])
-        te = UTCDateTime(tend)
-        stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
-
-    # compute mean cross correlation from the stack of CFTs (see stack function)
-    df = stall[0].stats.sampling_rate
-    npts = stall[0].stats.npts
-    tstart = min(tr.stats.starttime for tr in stall)
-    ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings)
-    logging.debug(f"tdifmin = {tdifmin}")
-
-    return stall, ccmad, tdifmin
 
 
 def get_correlation_stream(itemp, chunk_stream, settings):
@@ -216,21 +189,37 @@ def process_input(itemp, nn, ss, ich, stream_df, settings):
     return st_cft
 
 
-def stack(stall, df, tstart, d, npts, settings):
+def stack(correlation_stream, travel_times, settings):
     """
     Function to stack traces in a stream with different trace.id and
     different starttime but the same number of datapoints.
     Returns a trace having as starttime
     the earliest startime within the stream
     """
+    h24 = 86400
+    nchunk = settings['nchunk']
+    stall = Stream()
+    for tc_cft in correlation_stream:
+        sta = tc_cft.stats.station
+        chan = tc_cft.stats.channel
+        net = tc_cft.stats.network
+        tdif = travel_times[f"{net}.{sta}.{chan}"]
+        tstart = tc_cft.stats.starttime + float(tdif)
+        tend = tstart + (h24 / nchunk)
+        ts = UTCDateTime(tstart)
+        te = UTCDateTime(tend)
+        stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
+
+    tstart_min = min(tr.stats.starttime for tr in stall)
+
     stdup = settings['stdup']
     stddown = settings['stddown']
     nch_min = settings['nch_min']
-    std_trac = np.empty(len(stall))
-    td = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
+    std_trac = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
     avestd = np.nanmean(std_trac)
     avestdup = avestd * stdup
     avestddw = avestd * stddown
+    td = np.empty(len(stall))
 
     for jtr, tr in enumerate(stall):
         if std_trac[jtr] >= avestdup or std_trac[jtr] <= avestddw:
@@ -242,22 +231,22 @@ def stack(stall, df, tstart, d, npts, settings):
             chan = tr.stats.channel
             net = tr.stats.network
             s = f"{net}.{sta}.{chan}"
-            td[jtr] = float(d[s])
+            td[jtr] = float(travel_times[s])
 
     header = {"network": "STACK",
               "station": "BH",
               "channel": "XX",
-              "starttime": tstart,
-              "sampling_rate": df,
-              "npts": npts}
+              "starttime": tstart_min,
+              "sampling_rate": stall[0].stats.sampling_rate,
+              "npts": stall[0].stats.npts}
 
     if len(stall) >= nch_min:
         tdifmin = min(td)
         data = np.nanmean([tr.data for tr in stall], axis=0)
     else:
         tdifmin = None
-        data = np.zeros(npts)
-    return Trace(data=data, header=header), tdifmin
+        data = np.zeros_like(stall[0].data)
+    return stall, Trace(data=data, header=header), tdifmin
 
 
 def csc(stall, stcc, trg, tstda, settings):
