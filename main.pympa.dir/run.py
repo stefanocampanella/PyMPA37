@@ -31,8 +31,9 @@
 # Python "bottleneck" utilities to speed up numpy array operations
 #
 import logging
-from time import perf_counter as timer
 from pathlib import Path
+from time import perf_counter as timer
+
 from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader

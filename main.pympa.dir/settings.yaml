@@ -26,7 +26,7 @@ channels:
   - HHN
   - HHZ
 networks:
-- IV
+  - IV
 lowpassf: 3.0
 highpassf: 8.0
 sample_tol: 6
@@ -37,9 +37,9 @@ utc_prec: 6
 cont_dir: 24h
 temp_dir: template
 travel_dir: ttimes
-date_range: [2010-07-23, 2010-07-24]
+date_range: [ 2010-07-23, 2010-07-24 ]
 ev_catalog: templates.zmap
-template_range: [200, 204]
+template_range: [ 200, 204 ]
 factor_thre: 8
 stdup: 1.5
 stddown: 0.25

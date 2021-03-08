@@ -12,6 +12,13 @@ from obspy.signal.cross_correlation import correlate_template
 from obspy.signal.trigger import coincidence_trigger
 
 
+def listdays(start, stop):
+    date = start
+    while date < stop:
+        yield date
+        date += datetime.timedelta(days=1)
+
+
 def list_chunks(day, nchunk):
     delta = datetime.timedelta(days=1) / nchunk
     end = day + datetime.timedelta(days=1)
@@ -148,13 +155,6 @@ def get_template_stream(itemp, travel_times, settings):
     return template_stream
 
 
-def listdays(start, stop):
-    date = start
-    while date < stop:
-        yield date
-        date += datetime.timedelta(days=1)
-
-
 # itemp = template number, nn =  network code, ss = station code,
 # ich = channel code, stream_df = Stream() object as defined in obspy library
 def process_input(itemp, nn, ss, ich, stream_df, settings):
@@ -196,21 +196,15 @@ def stack(correlation_stream, travel_times, settings):
     Returns a trace having as starttime
     the earliest startime within the stream
     """
-    h24 = 86400
     nchunk = settings['nchunk']
     stall = Stream()
     for tc_cft in correlation_stream:
         sta = tc_cft.stats.station
         chan = tc_cft.stats.channel
         net = tc_cft.stats.network
-        tdif = travel_times[f"{net}.{sta}.{chan}"]
-        tstart = tc_cft.stats.starttime + float(tdif)
-        tend = tstart + (h24 / nchunk)
-        ts = UTCDateTime(tstart)
-        te = UTCDateTime(tend)
-        stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
-
-    tstart_min = min(tr.stats.starttime for tr in stall)
+        tstart = UTCDateTime(tc_cft.stats.starttime + float(travel_times[f"{net}.{sta}.{chan}"]))
+        tend = tstart + datetime.timedelta(days=1) / nchunk
+        stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
     stdup = settings['stdup']
     stddown = settings['stddown']
@@ -219,8 +213,8 @@ def stack(correlation_stream, travel_times, settings):
     avestd = np.nanmean(std_trac)
     avestdup = avestd * stdup
     avestddw = avestd * stddown
-    td = np.empty(len(stall))
 
+    td = np.empty(len(stall))
     for jtr, tr in enumerate(stall):
         if std_trac[jtr] >= avestdup or std_trac[jtr] <= avestddw:
             stall.remove(tr)
@@ -233,19 +227,19 @@ def stack(correlation_stream, travel_times, settings):
             s = f"{net}.{sta}.{chan}"
             td[jtr] = float(travel_times[s])
 
-    header = {"network": "STACK",
-              "station": "BH",
-              "channel": "XX",
-              "starttime": tstart_min,
-              "sampling_rate": stall[0].stats.sampling_rate,
-              "npts": stall[0].stats.npts}
-
     if len(stall) >= nch_min:
         tdifmin = min(td)
         data = np.nanmean([tr.data for tr in stall], axis=0)
     else:
         tdifmin = None
         data = np.zeros_like(stall[0].data)
+
+    header = {"network": "STACK",
+              "station": "BH",
+              "channel": "XX",
+              "starttime": min(tr.stats.starttime for tr in stall),
+              "sampling_rate": stall[0].stats.sampling_rate,
+              "npts": stall[0].stats.npts}
     return stall, Trace(data=data, header=header), tdifmin
 
 
@@ -286,10 +280,7 @@ def csc(stall, stcc, trg, tstda, settings):
     nch = (max_sct > single_channelcft).sum()
 
     if nch >= nch_min:
-        nch09 = (max_sct > 0.9).sum()
-        nch07 = (max_sct > 0.7).sum()
-        nch05 = (max_sct > 0.5).sum()
-        nch03 = (max_sct > 0.3).sum()
+        nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
         cft_ave = np.nanmean(max_sct)
         crt = cft_ave / tstda
         cft_ave_trg = np.nanmean(max_trg)
@@ -299,10 +290,7 @@ def csc(stall, stcc, trg, tstda, settings):
         chan_sct = chan_sct.T
         channels_list = []
         for idchan in range(len(max_sct)):
-            record = (chan_sct[idchan].decode(),
-                      max_trg[idchan],
-                      max_sct[idchan],
-                      max_ind[idchan])
+            record = (chan_sct[idchan].decode(), max_trg[idchan], max_sct[idchan], max_ind[idchan])
             channels_list.append(record)
         return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09, channels_list
     else:
