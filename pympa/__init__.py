@@ -111,31 +111,24 @@ def stack_all(itemp, chunk_stream, travel_times, settings):
     h24 = 86400
     nchunk = settings['nchunk']
     correlation_stream = get_correlation_stream(itemp, chunk_stream, settings)
-    # seconds in 24 hours
     nfile = len(correlation_stream)
     tstart = np.empty(nfile)
-    tend = np.empty(nfile)
-    tdif = np.empty(nfile)
     stall = Stream()
     for idx, tc_cft in enumerate(correlation_stream):
-        # get station name from trace
         sta = tc_cft.stats.station
         chan = tc_cft.stats.channel
         net = tc_cft.stats.network
-        # get stream starttime
-        # waveforms should have the same number of npts
-        # and should be synchronized to the S-wave travel time
-        tdif[idx] = travel_times[f"{net}.{sta}.{chan}"]
-        tstart[idx] = tc_cft.stats.starttime + tdif[idx]
-        tend[idx] = tstart[idx] + (h24 / nchunk)
+        tdif = travel_times[f"{net}.{sta}.{chan}"]
+        tstart[idx] = tc_cft.stats.starttime + float(tdif)
+        tend = tstart[idx] + (h24 / nchunk)
         ts = UTCDateTime(tstart[idx])
-        te = UTCDateTime(tend[idx])
+        te = UTCDateTime(tend)
         stall += tc_cft.trim(starttime=ts, endtime=te, nearest_sample=True, pad=True, fill_value=0)
 
     # compute mean cross correlation from the stack of CFTs (see stack function)
-    tstart = min(tr.stats.starttime for tr in stall)
     df = stall[0].stats.sampling_rate
     npts = stall[0].stats.npts
+    tstart = min(tr.stats.starttime for tr in stall)
     ccmad, tdifmin = stack(stall, df, tstart, travel_times, npts, settings)
     logging.debug(f"tdifmin = {tdifmin}")
 
