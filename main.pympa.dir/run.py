@@ -67,10 +67,9 @@ if __name__ == '__main__':
 
     with open("output.stats", "w") as file:
         for event in events_list:
-            channels_list = event[-1]
-            for channel in channels_list:
+            file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
+            for channel in event[-1]:
                 str22 = "%s %s %s %s \n" % channel
                 file.write(str22)
-            file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
 
     print(" elapsed time ", timer() - start_time, " seconds")
