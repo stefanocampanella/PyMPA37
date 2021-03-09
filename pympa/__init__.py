@@ -53,46 +53,41 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
         # find minimum time to recover origin time
         min_time_value = min(float(v) for v in travel_times.values())
         for itrig, trg in enumerate(triglist):
-            [nch,
-         cft_ave,
-         crt,
-         cft_ave_trg,
-         crt_trg,
-         nch3,
-         nch5,
-         nch7,
-         nch9,
-         channels_list] = csc(stall, stcc, trg, tstda, settings)
-            # for each trigger, detrended, and filtered continuous
-            # data channels are trimmed and amplitude useful to
-            # estimate magnitude is measured.
-            # tdifmin is computed for contributing channels within the stack function
-            tt = trg["time"] + 2 * min_time_value - tdifmin
-            if nch >= settings['nch_min']:
-                md = np.zeros(len(continuous_stream))
-                for il, tc in enumerate(continuous_stream):
-                    ss = tc.stats.station
-                    ich = tc.stats.channel
-                    if template_stream.select(station=ss, channel=ich):
-                        template_trace, = template_stream.select(station=ss, channel=ich)
-                        uts = template_trace.stats.starttime
-                        # reference time to be used for retrieving time synchronization
-                        reft = min(tr.stats.starttime for tr in template_stream)
-                        timestart = tt - tdifmin + (uts - reft)
-                        timend = timestart + settings['temp_length']
-                        ta = tc.copy()
-                        ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-                        damaxac = max(abs(ta.data))
-                        dtt = max(abs(template_trace.data))
-                        if damaxac != 0 and dtt != 0:
-                            md[il] = mag_detect(mt, dtt, damaxac)
-                mdr = reject_moutliers(md)
-                mm = round(mdr.mean(), 2)
-                record = (itemp, itrig, tt, mm, mt, nch, tstda,
-                          cft_ave, crt, cft_ave_trg, crt_trg,
-                          nch3, nch5, nch7, nch9, channels_list)
-                events_list.append(record)
+            stats = csc(stall, stcc, trg, tstda, settings)
+            if stats:
+                nch = stats[0]
+                tt = trg["time"] + 2 * min_time_value - tdifmin
+                if nch >= settings['nch_min']:
+                    mdr = magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings)
+                    record = (itemp, itrig, tt, mdr, mt, tstda, *stats)
+                    events_list.append(record)
     return events_list
+
+
+def magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings):
+    # for each trigger, detrended, and filtered continuous
+    # data channels are trimmed and amplitude useful to
+    # estimate magnitude is measured.
+    # tdifmin is computed for contributing channels within the stack function
+    md = np.zeros(len(continuous_stream))
+    for il, tc in enumerate(continuous_stream):
+        ss = tc.stats.station
+        ich = tc.stats.channel
+        if template_stream.select(station=ss, channel=ich):
+            template_trace, = template_stream.select(station=ss, channel=ich)
+            uts = template_trace.stats.starttime
+            # reference time to be used for retrieving time synchronization
+            reft = min(tr.stats.starttime for tr in template_stream)
+            timestart = tt - tdifmin + (uts - reft)
+            timend = timestart + settings['temp_length']
+            ta = tc.copy()
+            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
+            damaxac = max(abs(ta.data))
+            dtt = max(abs(template_trace.data))
+            if damaxac != 0 and dtt != 0:
+                md[il] = mag_detect(mt, dtt, damaxac)
+    mdr = reject_moutliers(md)
+    return mdr.mean()
 
 
 def get_correlation_stream(itemp, chunk_stream, settings):
@@ -231,8 +226,7 @@ def csc(stall, stcc, trg, tstda, settings):
     nch, cft_ave, crt are re-evaluated on the basis of
     +/- 2 sample approximation. Statistics are written in stat files
     """
-    # important parameters: a sample_tolerance less than 2 results often
-    # in wrong magnitudes
+    # important parameters: a sample_tolerance less than 2 results often in wrong magnitudes
     sample_tolerance = settings['sample_tol']
     single_channelcft = settings['cc_threshold']
     nch_min = settings['nch_min']
@@ -274,7 +268,7 @@ def csc(stall, stcc, trg, tstda, settings):
             channels_list.append(record)
         return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09, channels_list
     else:
-        return tuple(1 for _ in range(10))
+        return None
 
 
 def mag_detect(magt, amaxt, amaxd):
