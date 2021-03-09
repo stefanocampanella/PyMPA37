@@ -60,8 +60,9 @@ if __name__ == '__main__':
                 for chunk in list_chunks(day, settings['nchunk']):
                     logging.debug(f"Processing chunk ({chunk})")
                     chunk_stream = get_continuous_stream(template_stream, day, *chunk, settings)
-                    new_events = find_events(itemp, template_stream, chunk_stream, travel_times, mt, settings)
-                    events_list.extend(new_events)
+                    if len(chunk_stream) >= settings['nch_min']:
+                        new_events = find_events(itemp, template_stream, chunk_stream, travel_times, mt, settings)
+                        events_list.extend(new_events)
             else:
                 logging.info(f"{day}, not enough channels for template {itemp} (nch_min: {settings['nch_min']}")
 

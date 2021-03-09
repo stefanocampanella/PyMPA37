@@ -29,89 +29,69 @@ def list_chunks(day, nchunk):
 
 
 def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
-    nch_min = settings['nch_min']
     events_list = []
-    if len(continuous_stream) >= nch_min:
-        correlation_stream = get_correlation_stream(itemp, continuous_stream, settings)
-        stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
-
-        if tdifmin is not None:
-            # compute mean absolute deviation of abs(ccmad)
-            tstda = mad(ccmad.data)
-
-            # define threshold as 9 times std  and quality index
-            threshold = settings['factor_thre'] * tstda
-
-            # Run coincidence trigger on a single CC trace resulting from the CFTs stack
-            # essential threshold parameters Cross correlation thresholds
-            stcc = Stream(traces=ccmad)
-            triglist = coincidence_trigger(None,
-                                           threshold,
-                                           threshold - 0.15 * threshold,
-                                           stcc,
-                                           1.0,
-                                           trace_ids=None,
-                                           similarity_thresholds={"BH": threshold},
-                                           delete_long_trigger=False,
-                                           trigger_off_extension=3.0,
-                                           details=True)
-
-            # find minimum time to recover origin time
-            min_time_value = min(float(v) for v in travel_times.values())
-            damaxat = {}
-            for il, tr in enumerate(template_stream):
-                sta_t = tr.stats.station
-                cha_t = tr.stats.channel
-                tid_t = "%s.%s" % (sta_t, cha_t)
-                damaxat[tid_t] = max(abs(tr.data))
-            for itrig, trg in enumerate(triglist):
-                # tdifmin is computed for contributing channels within the stack function
-                if tdifmin == min_time_value:
-                    tt = trg["time"] + min_time_value
-                else:
-                    diff_time = min_time_value - tdifmin
-                    tt = trg["time"] + diff_time + min_time_value
-                [nch,
-                 cft_ave,
-                 crt,
-                 cft_ave_trg,
-                 crt_trg,
-                 nch3,
-                 nch5,
-                 nch7,
-                 nch9,
-                 channels_list] = csc(stall, stcc, trg, tstda, settings)
-
-                if nch >= nch_min:
-                    nn = len(continuous_stream)
-                    md = np.zeros(nn)
-                    # for each trigger, detrended, and filtered continuous
-                    # data channels are trimmed and amplitude useful to
-                    # estimate magnitude is measured.
-                    for il, tc in enumerate(continuous_stream):
-                        ss = tc.stats.station
-                        ich = tc.stats.channel
-                        if template_stream.select(station=ss, channel=ich).__nonzero__():
-                            ttt = template_stream.select(station=ss, channel=ich)[0]
-                            uts = UTCDateTime(ttt.stats.starttime).timestamp
-                            # reference time to be used for retrieving time synchronization
-                            reft = min(tr.stats.starttime for tr in template_stream)
-                            utr = UTCDateTime(reft).timestamp
-                            timestart = UTCDateTime(tt) - tdifmin + (uts - utr)
-                            timend = timestart + settings['temp_length']
-                            ta = tc.copy()
-                            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-                            damaxac = max(abs(ta.data))
-                            tid_c = f"{ss}.{ich}"
-                            dtt = damaxat[tid_c]
-                            if damaxac != 0 and dtt != 0:
-                                md[il] = mag_detect(mt, damaxat[tid_c], damaxac)
-                    mdr = reject_moutliers(md, 1)
-                    mm = round(mdr.mean(), 2)
-                    record = (itemp, itrig, UTCDateTime(tt), mm, mt, nch, tstda,
-                              cft_ave, crt, cft_ave_trg, crt_trg,
-                              nch3, nch5, nch7, nch9, channels_list)
-                    events_list.append(record)
+    correlation_stream = get_correlation_stream(itemp, continuous_stream, settings)
+    stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
+    # compute mean absolute deviation of abs(ccmad)
+    tstda = mad(ccmad.data)
+    # define threshold as 9 times std  and quality index
+    threshold = settings['factor_thre'] * tstda
+    stcc = Stream(traces=ccmad)
+    if tdifmin is not None:
+        # Run coincidence trigger on a single CC trace resulting from the CFTs stack
+        # essential threshold parameters Cross correlation thresholds
+        triglist = coincidence_trigger(None,
+                                       threshold,
+                                       threshold - 0.15 * threshold,
+                                       stcc,
+                                       1.0,
+                                       trace_ids=None,
+                                       similarity_thresholds={"BH": threshold},
+                                       delete_long_trigger=False,
+                                       trigger_off_extension=3.0,
+                                       details=True)
+        # find minimum time to recover origin time
+        min_time_value = min(float(v) for v in travel_times.values())
+        for itrig, trg in enumerate(triglist):
+            [nch,
+         cft_ave,
+         crt,
+         cft_ave_trg,
+         crt_trg,
+         nch3,
+         nch5,
+         nch7,
+         nch9,
+         channels_list] = csc(stall, stcc, trg, tstda, settings)
+            # for each trigger, detrended, and filtered continuous
+            # data channels are trimmed and amplitude useful to
+            # estimate magnitude is measured.
+            # tdifmin is computed for contributing channels within the stack function
+            tt = trg["time"] + 2 * min_time_value - tdifmin
+            if nch >= settings['nch_min']:
+                md = np.zeros(len(continuous_stream))
+                for il, tc in enumerate(continuous_stream):
+                    ss = tc.stats.station
+                    ich = tc.stats.channel
+                    if template_stream.select(station=ss, channel=ich):
+                        template_trace, = template_stream.select(station=ss, channel=ich)
+                        uts = template_trace.stats.starttime
+                        # reference time to be used for retrieving time synchronization
+                        reft = min(tr.stats.starttime for tr in template_stream)
+                        timestart = tt - tdifmin + (uts - reft)
+                        timend = timestart + settings['temp_length']
+                        ta = tc.copy()
+                        ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
+                        damaxac = max(abs(ta.data))
+                        dtt = max(abs(template_trace.data))
+                        if damaxac != 0 and dtt != 0:
+                            md[il] = mag_detect(mt, dtt, damaxac)
+                mdr = reject_moutliers(md)
+                mm = round(mdr.mean(), 2)
+                record = (itemp, itrig, tt, mm, mt, nch, tstda,
+                          cft_ave, crt, cft_ave_trg, crt_trg,
+                          nch3, nch5, nch7, nch9, channels_list)
+                events_list.append(record)
     return events_list
 
 
