@@ -31,14 +31,13 @@
 # Python "bottleneck" utilities to speed up numpy array operations
 #
 import logging
-from pathlib import Path
 from time import perf_counter as timer
 
 from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader
 
-from pympa import listdays, get_continuous_stream, get_template_stream, find_events
+from pympa import get_travel_times, get_template_stream, listdays, get_continuous_stream, find_events
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log', filemode='w', format='%(levelname)s: %(message)s')
@@ -48,12 +47,9 @@ if __name__ == '__main__':
     catalog = read_events(settings['ev_catalog'])
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
-
     events_list = []
     for itemp in range(*settings['template_range']):
-        travel_dir = Path(settings['travel_dir'])
-        with open(travel_dir / f"{itemp}.ttimes", "r") as ttim:
-            travel_times = dict(x.rstrip().split(None, 1) for x in ttim)
+        travel_times = get_travel_times(itemp, settings)
         template_stream = get_template_stream(itemp, travel_times, settings)
         if len(template_stream) >= settings['nch_min']:
             mt = catalog[itemp].magnitudes[0].mag

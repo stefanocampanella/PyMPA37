@@ -1,3 +1,4 @@
+import csv
 import itertools
 import os
 import os.path
@@ -19,13 +20,25 @@ def listdays(start, stop):
         date += datetime.timedelta(days=1)
 
 
+def get_travel_times(itemp, settings):
+    travel_times = {}
+    with open(Path(settings['travel_dir']) / f"{itemp}.ttimes", "r") as ttim:
+        data = csv.reader(ttim, delimiter=' ')
+        for row in data:
+            key, time = row
+            travel_times[key] = float(time)
+    keys = sorted(travel_times, key=lambda x: travel_times[x])
+    if len(keys) > settings['chan_max']:
+        keys = keys[0:settings['chan_max']]
+    travel_times = {key: travel_times[key] for key in keys}
+    return travel_times
+
+
 def get_template_stream(itemp, travel_times, settings):
     template_stream = Stream()
-    temp_dir = Path(settings['temp_dir'])
-    v = sorted(travel_times, key=lambda x: float(travel_times[x]))[0:settings['chan_max']]
-    for vvc in v:
+    for vvc in travel_times:
         n_net, n_sta, n_chn = vvc.split(".")
-        filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
+        filepath = Path(settings['temp_dir']) / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
         with filepath.open('rb') as file:
             logging.debug(f"Reading {filepath}")
             template_stream += read(file, dtype="float32")
@@ -75,7 +88,7 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
                                        trigger_off_extension=3.0,
                                        details=True)
         # find minimum time to recover origin time
-        min_time_value = min(float(v) for v in travel_times.values())
+        min_time_value = min(travel_times.values())
         for itrig, trg in enumerate(triglist):
             stats = csc(stall, stcc, trg, tstda, settings)
             if stats:
@@ -133,7 +146,7 @@ def stack(correlation_stream, travel_times, settings):
         sta = tc_cft.stats.station
         chan = tc_cft.stats.channel
         net = tc_cft.stats.network
-        tstart = tc_cft.stats.starttime + float(travel_times[f"{net}.{sta}.{chan}"])
+        tstart = tc_cft.stats.starttime + travel_times[f"{net}.{sta}.{chan}"]
         tend = tstart + datetime.timedelta(days=1)
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
@@ -156,7 +169,7 @@ def stack(correlation_stream, travel_times, settings):
                 chan = tr.stats.channel
                 net = tr.stats.network
                 s = f"{net}.{sta}.{chan}"
-                td[jtr] = float(travel_times[s])
+                td[jtr] = travel_times[s]
         tdifmin = min(td)
         header = {"network": "STACK",
                   "station": "BH",
