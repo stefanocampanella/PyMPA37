@@ -26,19 +26,20 @@ def get_travel_times(itemp, settings):
         data = csv.reader(ttim, delimiter=' ')
         for row in data:
             key, time = row
+            key = tuple(key.split('.'))
             travel_times[key] = float(time)
     keys = sorted(travel_times, key=lambda x: travel_times[x])
     if len(keys) > settings['chan_max']:
-        keys = keys[0:settings['chan_max']]
+        keys = keys[:settings['chan_max']]
     travel_times = {key: travel_times[key] for key in keys}
     return travel_times
 
 
 def get_template_stream(itemp, travel_times, settings):
     template_stream = Stream()
-    for vvc in travel_times:
-        n_net, n_sta, n_chn = vvc.split(".")
-        filepath = Path(settings['temp_dir']) / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
+    for key in travel_times:
+        net, sta, chn = key
+        filepath = Path(settings['temp_dir']) / f"{itemp}.{net}.{sta}..{chn}.mseed"
         with filepath.open('rb') as file:
             logging.debug(f"Reading {filepath}")
             template_stream += read(file, dtype="float32")
@@ -103,16 +104,13 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
 
 def get_correlation_stream(itemp, continuous_stream, settings):
     correlation_stream = Stream()
-    template_directory = Path(settings['temp_dir'])
-    for nn, ss, ich in itertools.product(settings['networks'],
-                                         settings['stations'],
-                                         settings['channels']):
-        template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
+    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
+        template_path = Path(settings['temp_dir']) / f"{itemp}.{nn}.{ss}..{ich}.mseed"
         if os.path.isfile(template_path):
             if os.path.getsize(template_path) > 0:
                 with template_path.open('rb') as template_file:
-                    st_temp = read(template_file, dtype="float32")
-                tt, = st_temp
+                    template_stream = read(template_file, dtype="float32")
+                tt, = template_stream
                 sc = continuous_stream.select(station=ss, channel=ich)
                 if sc:
                     tc, = sc
@@ -146,7 +144,7 @@ def stack(correlation_stream, travel_times, settings):
         sta = tc_cft.stats.station
         chan = tc_cft.stats.channel
         net = tc_cft.stats.network
-        tstart = tc_cft.stats.starttime + travel_times[f"{net}.{sta}.{chan}"]
+        tstart = tc_cft.stats.starttime + travel_times[(net, sta, chan)]
         tend = tstart + datetime.timedelta(days=1)
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
@@ -168,8 +166,7 @@ def stack(correlation_stream, travel_times, settings):
                 sta = tr.stats.station
                 chan = tr.stats.channel
                 net = tr.stats.network
-                s = f"{net}.{sta}.{chan}"
-                td[jtr] = travel_times[s]
+                td[jtr] = travel_times[(net, sta, chan)]
         tdifmin = min(td)
         header = {"network": "STACK",
                   "station": "BH",
