@@ -19,6 +19,39 @@ def listdays(start, stop):
         date += datetime.timedelta(days=1)
 
 
+def get_template_stream(itemp, travel_times, settings):
+    template_stream = Stream()
+    temp_dir = Path(settings['temp_dir'])
+    v = sorted(travel_times, key=lambda x: float(travel_times[x]))[0:settings['chan_max']]
+    for vvc in v:
+        n_net, n_sta, n_chn = vvc.split(".")
+        filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
+        with filepath.open('rb') as file:
+            logging.debug(f"Reading {filepath}")
+            template_stream += read(file, dtype="float32")
+    return template_stream
+
+
+def get_continuous_stream(template_stream, day, settings):
+    cont_dir = Path(settings['cont_dir'])
+    stream_df = Stream()
+    for tr in template_stream:
+        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            with filepath.open('rb') as file:
+                st = read(file, dtype="float32")
+                if st:
+                    st.merge(method=1, fill_value=0)
+                    tc, = st
+                    tc.detrend("constant")
+                    tc.trim(starttime=day,
+                            endtime=day + datetime.timedelta(days=1),
+                            pad=True, fill_value=0)
+                    tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
+                    stream_df += tc
+    return stream_df
+
+
 def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
     correlation_stream = get_correlation_stream(itemp, continuous_stream, settings)
@@ -55,106 +88,37 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
     return events_list
 
 
-def magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings):
-    # for each trigger, detrended, and filtered continuous
-    # data channels are trimmed and amplitude useful to
-    # estimate magnitude is measured.
-    # tdifmin is computed for contributing channels within the stack function
-    md = np.zeros(len(continuous_stream))
-    for il, tc in enumerate(continuous_stream):
-        ss = tc.stats.station
-        ich = tc.stats.channel
-        if template_stream.select(station=ss, channel=ich):
-            template_trace, = template_stream.select(station=ss, channel=ich)
-            uts = template_trace.stats.starttime
-            # reference time to be used for retrieving time synchronization
-            reft = min(tr.stats.starttime for tr in template_stream)
-            timestart = tt - tdifmin + (uts - reft)
-            timend = timestart + settings['temp_length']
-            ta = tc.copy()
-            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-            damaxac = max(abs(ta.data))
-            dtt = max(abs(template_trace.data))
-            if damaxac != 0 and dtt != 0:
-                md[il] = mag_detect(mt, dtt, damaxac)
-    mdr = reject_moutliers(md)
-    return mdr.mean()
-
-
 def get_correlation_stream(itemp, continuous_stream, settings):
-    stream_cft = Stream()
+    correlation_stream = Stream()
+    template_directory = Path(settings['temp_dir'])
     for nn, ss, ich in itertools.product(settings['networks'],
                                          settings['stations'],
                                          settings['channels']):
-        stream_cft += process_input(itemp, nn, ss, ich, continuous_stream, settings)
-    return stream_cft
-
-
-def get_continuous_stream(template_stream, day, settings):
-    cont_dir = Path(settings['cont_dir'])
-    stream_df = Stream()
-    for tr in template_stream:
-        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-            with filepath.open('rb') as file:
-                st = read(file, dtype="float32")
-                if st:
-                    st.merge(method=1, fill_value=0)
-                    tc, = st
-                    tc.detrend("constant")
-                    tc.trim(starttime=day,
-                            endtime=day + datetime.timedelta(days=1),
-                            pad=True, fill_value=0)
-                    tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
-                    stream_df += Stream(traces=[tc])
-    return stream_df
-
-
-def get_template_stream(itemp, travel_times, settings):
-    template_stream = Stream()
-    temp_dir = Path(settings['temp_dir'])
-    v = sorted(travel_times, key=lambda x: float(travel_times[x]))[0:settings['chan_max']]
-    for vvc in v:
-        n_net, n_sta, n_chn = vvc.split(".")
-        filepath = temp_dir / f"{itemp}.{n_net}.{n_sta}..{n_chn}.mseed"
-        with filepath.open('rb') as file:
-            logging.debug(f"Reading {filepath}")
-            template_stream += read(file, dtype="float32")
-    return template_stream
-
-
-# itemp = template number, nn =  network code, ss = station code,
-# ich = channel code, stream_df = Stream() object as defined in obspy library
-def process_input(itemp, nn, ss, ich, stream_df, settings):
-    template_directory = Path(settings['temp_dir'])
-    template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
-    st_cft = Stream()
-    if os.path.isfile(template_path):
-        if os.path.getsize(template_path) > 0:
-            # print "ok template exist and not empty"
-            with template_path.open('rb') as template_file:
-                st_temp = read(template_file, dtype="float32")
-            tt, = st_temp
-            # continuous data are stored in stream_df
-            sc = stream_df.select(station=ss, channel=ich)
-            if sc:
-                tc, = sc
-                fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
-                fct = np.nan_to_num(fct)
-                stats = {"network": tc.stats.network,
-                         "station": tc.stats.station,
-                         "location": "",
-                         "channel": tc.stats.channel,
-                         "starttime": tc.stats.starttime,
-                         "npts": len(fct),
-                         "sampling_rate": tc.stats.sampling_rate,
-                         "mseed": {"dataquality": "D"}}
-                st_cft = Stream(Trace(data=fct, header=stats))
+        template_path = template_directory / f"{itemp}.{nn}.{ss}..{ich}.mseed"
+        if os.path.isfile(template_path):
+            if os.path.getsize(template_path) > 0:
+                with template_path.open('rb') as template_file:
+                    st_temp = read(template_file, dtype="float32")
+                tt, = st_temp
+                sc = continuous_stream.select(station=ss, channel=ich)
+                if sc:
+                    tc, = sc
+                    fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
+                    fct = np.nan_to_num(fct)
+                    stats = {"network": tc.stats.network,
+                             "station": tc.stats.station,
+                             "location": "",
+                             "channel": tc.stats.channel,
+                             "starttime": tc.stats.starttime,
+                             "npts": len(fct),
+                             "sampling_rate": tc.stats.sampling_rate,
+                             "mseed": {"dataquality": "D"}}
+                    correlation_stream += Trace(data=fct, header=stats)
+                else:
+                    logging.debug("No stream is found")
             else:
-                logging.debug("No stream is found")
-        else:
-            logging.debug(f"{template_path} is empty")
-    return st_cft
+                logging.debug(f"{template_path} is empty")
+    return correlation_stream
 
 
 def stack(correlation_stream, travel_times, settings):
@@ -259,6 +223,32 @@ def csc(stall, stcc, trg, tstda, settings):
         return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09, channels_list
     else:
         return None
+
+
+def magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings):
+    # for each trigger, detrended, and filtered continuous
+    # data channels are trimmed and amplitude useful to
+    # estimate magnitude is measured.
+    # tdifmin is computed for contributing channels within the stack function
+    md = np.zeros(len(continuous_stream))
+    for il, tc in enumerate(continuous_stream):
+        ss = tc.stats.station
+        ich = tc.stats.channel
+        if template_stream.select(station=ss, channel=ich):
+            template_trace, = template_stream.select(station=ss, channel=ich)
+            uts = template_trace.stats.starttime
+            # reference time to be used for retrieving time synchronization
+            reft = min(tr.stats.starttime for tr in template_stream)
+            timestart = tt - tdifmin + (uts - reft)
+            timend = timestart + settings['temp_length']
+            ta = tc.copy()
+            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
+            damaxac = max(abs(ta.data))
+            dtt = max(abs(template_trace.data))
+            if damaxac != 0 and dtt != 0:
+                md[il] = mag_detect(mt, dtt, damaxac)
+    mdr = reject_moutliers(md)
+    return mdr.mean()
 
 
 def mag_detect(magt, amaxt, amaxd):
