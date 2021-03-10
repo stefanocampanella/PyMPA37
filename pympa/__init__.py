@@ -13,19 +13,10 @@ from obspy.signal.trigger import coincidence_trigger
 
 
 def listdays(start, stop):
-    date = start
+    date = UTCDateTime(start)
     while date < stop:
         yield date
         date += datetime.timedelta(days=1)
-
-
-def list_chunks(day, nchunk):
-    delta = datetime.timedelta(days=1) / nchunk
-    end = day + datetime.timedelta(days=1)
-    chunk_start = UTCDateTime(day)
-    while chunk_start < end:
-        yield chunk_start, min(chunk_start + delta, end)
-        chunk_start += delta
 
 
 def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
@@ -90,28 +81,30 @@ def magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings):
     return mdr.mean()
 
 
-def get_correlation_stream(itemp, chunk_stream, settings):
+def get_correlation_stream(itemp, continuous_stream, settings):
     stream_cft = Stream()
     for nn, ss, ich in itertools.product(settings['networks'],
                                          settings['stations'],
                                          settings['channels']):
-        stream_cft += process_input(itemp, nn, ss, ich, chunk_stream, settings)
+        stream_cft += process_input(itemp, nn, ss, ich, continuous_stream, settings)
     return stream_cft
 
 
-def get_continuous_stream(template_stream, day, t1, t2, settings):
+def get_continuous_stream(template_stream, day, settings):
     cont_dir = Path(settings['cont_dir'])
     stream_df = Stream()
     for tr in template_stream:
         filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             with filepath.open('rb') as file:
-                st = read(file, dtype="float32", starttime=t1, endtime=t2)
+                st = read(file, dtype="float32")
                 if st:
                     st.merge(method=1, fill_value=0)
-                    tc = st[0]
+                    tc, = st
                     tc.detrend("constant")
-                    tc.trim(starttime=t1, endtime=t2, pad=True, fill_value=0)
+                    tc.trim(starttime=day,
+                            endtime=day + datetime.timedelta(days=1),
+                            pad=True, fill_value=0)
                     tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
                     stream_df += Stream(traces=[tc])
     return stream_df
@@ -171,14 +164,13 @@ def stack(correlation_stream, travel_times, settings):
     Returns a trace having as starttime
     the earliest startime within the stream
     """
-    nchunk = settings['nchunk']
     stall = Stream()
     for tc_cft in correlation_stream:
         sta = tc_cft.stats.station
         chan = tc_cft.stats.channel
         net = tc_cft.stats.network
-        tstart = UTCDateTime(tc_cft.stats.starttime + float(travel_times[f"{net}.{sta}.{chan}"]))
-        tend = tstart + datetime.timedelta(days=1) / nchunk
+        tstart = tc_cft.stats.starttime + float(travel_times[f"{net}.{sta}.{chan}"])
+        tend = tstart + datetime.timedelta(days=1)
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
     if len(stall) >= settings['nch_min']:

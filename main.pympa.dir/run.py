@@ -38,7 +38,7 @@ from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader
 
-from pympa import listdays, list_chunks, get_continuous_stream, get_template_stream, find_events
+from pympa import listdays, get_continuous_stream, get_template_stream, find_events
 
 if __name__ == '__main__':
     logging.basicConfig(filename='run.log', filemode='w', format='%(levelname)s: %(message)s')
@@ -48,23 +48,22 @@ if __name__ == '__main__':
     catalog = read_events(settings['ev_catalog'])
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
+
     events_list = []
-    for day in listdays(*settings['date_range']):
-        for itemp in range(*settings['template_range']):
-            travel_dir = Path(settings['travel_dir'])
-            with open(travel_dir / f"{itemp}.ttimes", "r") as ttim:
-                travel_times = dict(x.rstrip().split(None, 1) for x in ttim)
-            template_stream = get_template_stream(itemp, travel_times, settings)
-            if len(template_stream) >= settings['nch_min']:
-                mt = catalog[itemp].magnitudes[0].mag
-                for chunk in list_chunks(day, settings['nchunk']):
-                    logging.debug(f"Processing chunk ({chunk})")
-                    chunk_stream = get_continuous_stream(template_stream, day, *chunk, settings)
-                    if len(chunk_stream) >= settings['nch_min']:
-                        new_events = find_events(itemp, template_stream, chunk_stream, travel_times, mt, settings)
-                        events_list.extend(new_events)
-            else:
-                logging.info(f"{day}, not enough channels for template {itemp} (nch_min: {settings['nch_min']}")
+    for itemp in range(*settings['template_range']):
+        travel_dir = Path(settings['travel_dir'])
+        with open(travel_dir / f"{itemp}.ttimes", "r") as ttim:
+            travel_times = dict(x.rstrip().split(None, 1) for x in ttim)
+        template_stream = get_template_stream(itemp, travel_times, settings)
+        if len(template_stream) >= settings['nch_min']:
+            mt = catalog[itemp].magnitudes[0].mag
+            for day in listdays(*settings['date_range']):
+                day_stream = get_continuous_stream(template_stream, day, settings)
+                if len(day_stream) >= settings['nch_min']:
+                    new_events = find_events(itemp, template_stream, day_stream, travel_times, mt, settings)
+                    events_list.extend(new_events)
+                else:
+                    logging.info(f"{day}, not enough channels for template {itemp} (nch_min: {settings['nch_min']}")
 
     with open("output.stats", "w") as file:
         for event in events_list:
