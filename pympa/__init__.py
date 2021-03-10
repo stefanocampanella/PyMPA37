@@ -141,11 +141,11 @@ def process_input(itemp, nn, ss, ich, stream_df, settings):
             # print "ok template exist and not empty"
             with template_path.open('rb') as template_file:
                 st_temp = read(template_file, dtype="float32")
-            tt = st_temp[0]
+            tt, = st_temp
             # continuous data are stored in stream_df
             sc = stream_df.select(station=ss, channel=ich)
             if sc:
-                tc = sc[0]
+                tc, = sc
                 fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
                 fct = np.nan_to_num(fct)
                 stats = {"network": tc.stats.network,
@@ -181,41 +181,39 @@ def stack(correlation_stream, travel_times, settings):
         tend = tstart + datetime.timedelta(days=1) / nchunk
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
-    stdup = settings['stdup']
-    stddown = settings['stddown']
-    nch_min = settings['nch_min']
-    std_trac = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
-    avestd = np.nanmean(std_trac)
-    avestdup = avestd * stdup
-    avestddw = avestd * stddown
+    if len(stall) >= settings['nch_min']:
+        stdup = settings['stdup']
+        stddown = settings['stddown']
+        std_trac = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
+        avestd = np.nanmean(std_trac)
+        avestdup = avestd * stdup
+        avestddw = avestd * stddown
 
-    td = np.empty(len(stall))
-    for jtr, tr in enumerate(stall):
-        if std_trac[jtr] >= avestdup or std_trac[jtr] <= avestddw:
-            stall.remove(tr)
-            logging.debug(f"Removed Trace n Stream = {tr} {std_trac[jtr]} {avestd}")
-            td[jtr] = 99.99
-        else:
-            sta = tr.stats.station
-            chan = tr.stats.channel
-            net = tr.stats.network
-            s = f"{net}.{sta}.{chan}"
-            td[jtr] = float(travel_times[s])
-
-    if len(stall) >= nch_min:
+        td = np.empty(len(stall))
+        for jtr, tr in enumerate(stall):
+            if std_trac[jtr] >= avestdup or std_trac[jtr] <= avestddw:
+                stall.remove(tr)
+                logging.debug(f"Removed Trace n Stream = {tr} {std_trac[jtr]} {avestd}")
+                td[jtr] = 99.99
+            else:
+                sta = tr.stats.station
+                chan = tr.stats.channel
+                net = tr.stats.network
+                s = f"{net}.{sta}.{chan}"
+                td[jtr] = float(travel_times[s])
         tdifmin = min(td)
-        data = np.nanmean([tr.data for tr in stall], axis=0)
+        header = {"network": "STACK",
+                  "station": "BH",
+                  "channel": "XX",
+                  "starttime": min(tr.stats.starttime for tr in stall),
+                  "sampling_rate": stall[0].stats.sampling_rate,
+                  "npts": stall[0].stats.npts}
+        ccmad = Trace(data=np.nanmean([tr.data for tr in stall], axis=0), header=header)
     else:
         tdifmin = None
-        data = np.zeros_like(stall[0].data)
+        ccmad = None
 
-    header = {"network": "STACK",
-              "station": "BH",
-              "channel": "XX",
-              "starttime": min(tr.stats.starttime for tr in stall),
-              "sampling_rate": stall[0].stats.sampling_rate,
-              "npts": stall[0].stats.npts}
-    return stall, Trace(data=data, header=header), tdifmin
+    return stall, ccmad, tdifmin
 
 
 def csc(stall, stcc, trg, tstda, settings):
