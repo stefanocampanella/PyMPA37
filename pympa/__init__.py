@@ -1,7 +1,3 @@
-import csv
-import itertools
-import os
-import os.path
 import datetime
 from math import log10
 from pathlib import Path
@@ -20,14 +16,14 @@ def listdays(start, stop):
         date += datetime.timedelta(days=1)
 
 
-def get_travel_times(itemp, settings):
+def get_travel_times(template_number, settings):
     travel_times = {}
-    with open(Path(settings['travel_dir']) / f"{itemp}.ttimes", "r") as ttim:
-        data = csv.reader(ttim, delimiter=' ')
-        for row in data:
-            key, time = row
+    with open(Path(settings['travel_dir']) / f"{template_number}.ttimes", "r") as file:
+        while line := file.readline():
+            key, value = line.split(' ')
             key = tuple(key.split('.'))
-            travel_times[key] = float(time)
+            value = float(value)
+            travel_times[key] = value
     keys = sorted(travel_times, key=lambda x: travel_times[x])
     if len(keys) > settings['chan_max']:
         keys = keys[:settings['chan_max']]
@@ -35,11 +31,11 @@ def get_travel_times(itemp, settings):
     return travel_times
 
 
-def get_template_stream(itemp, travel_times, settings):
+def get_template_stream(template_number, travel_times, settings):
     template_stream = Stream()
     for key in travel_times:
         net, sta, chn = key
-        filepath = Path(settings['temp_dir']) / f"{itemp}.{net}.{sta}..{chn}.mseed"
+        filepath = Path(settings['temp_dir']) / f"{template_number}.{net}.{sta}..{chn}.mseed"
         with filepath.open('rb') as file:
             logging.debug(f"Reading {filepath}")
             template_stream += read(file, dtype="float32")
@@ -47,41 +43,45 @@ def get_template_stream(itemp, travel_times, settings):
 
 
 def get_continuous_stream(template_stream, day, settings):
-    cont_dir = Path(settings['cont_dir'])
-    stream_df = Stream()
+    continuous_stream = Stream()
     for tr in template_stream:
-        filepath = cont_dir / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+        try:
+            filepath = Path(settings['cont_dir']) / f"{day.strftime('%y%m%d')}.{tr.stats.station}.{tr.stats.channel}"
             with filepath.open('rb') as file:
-                st = read(file, dtype="float32")
-                if st:
-                    st.merge(method=1, fill_value=0)
-                    tc, = st
-                    tc.detrend("constant")
-                    tc.trim(starttime=day,
-                            endtime=day + datetime.timedelta(days=1),
-                            pad=True, fill_value=0)
-                    tc.filter("bandpass", freqmin=settings['lowpassf'], freqmax=settings['highpassf'], zerophase=True)
-                    stream_df += tc
-    return stream_df
+                stream = read(file, dtype="float32")
+                stream.merge(method=1, fill_value=0)
+                trace, = stream
+                trace.detrend("constant")
+                trace.trim(starttime=day,
+                           endtime=day + datetime.timedelta(days=1),
+                           pad=True,
+                           fill_value=0)
+                trace.filter("bandpass",
+                             freqmin=settings['lowpassf'],
+                             freqmax=settings['highpassf'],
+                             zerophase=True)
+                continuous_stream += trace
+        except Exception as err:
+            logging.debug(f"{err}")
+
+    return continuous_stream
 
 
-def find_events(itemp, template_stream, continuous_stream, travel_times, mt, settings):
+def find_events(template_number, template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
-    correlation_stream = get_correlation_stream(itemp, continuous_stream, settings)
+    correlation_stream = get_correlation_stream(template_number, continuous_stream, settings)
     stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
-    # compute mean absolute deviation of abs(ccmad)
-    tstda = mad(ccmad.data)
-    # define threshold as 9 times std  and quality index
-    threshold = settings['factor_thre'] * tstda
-    stcc = Stream(traces=ccmad)
-    if tdifmin is not None:
+    if stall and ccmad is not None and tdifmin is not None:
+        # compute mean absolute deviation of abs(ccmad)
+        tstda = mad(ccmad.data)
+        # define threshold as 9 times std  and quality index
+        threshold = settings['factor_thre'] * tstda
         # Run coincidence trigger on a single CC trace resulting from the CFTs stack
         # essential threshold parameters Cross correlation thresholds
         triglist = coincidence_trigger(None,
                                        threshold,
                                        threshold - 0.15 * threshold,
-                                       stcc,
+                                       Stream(ccmad),
                                        1.0,
                                        trace_ids=None,
                                        similarity_thresholds={"BH": threshold},
@@ -90,45 +90,40 @@ def find_events(itemp, template_stream, continuous_stream, travel_times, mt, set
                                        details=True)
         # find minimum time to recover origin time
         min_time_value = min(travel_times.values())
-        for itrig, trg in enumerate(triglist):
-            stats = csc(stall, stcc, trg, tstda, settings)
+        for trg in triglist:
+            stats = csc(stall, ccmad, trg, tstda, settings)
             if stats:
                 nch = stats[0]
                 tt = trg["time"] + 2 * min_time_value - tdifmin
                 if nch >= settings['nch_min']:
                     mdr = magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings)
-                    record = (itemp, itrig, tt, mdr, mt, tstda, *stats)
+                    record = (template_number, tt, mdr, mt, tstda, *stats)
                     events_list.append(record)
     return events_list
 
 
-def get_correlation_stream(itemp, continuous_stream, settings):
+def get_correlation_stream(template_number, continuous_stream, settings):
     correlation_stream = Stream()
-    for nn, ss, ich in itertools.product(settings['networks'], settings['stations'], settings['channels']):
-        template_path = Path(settings['temp_dir']) / f"{itemp}.{nn}.{ss}..{ich}.mseed"
-        if os.path.isfile(template_path):
-            if os.path.getsize(template_path) > 0:
-                with template_path.open('rb') as template_file:
-                    template_stream = read(template_file, dtype="float32")
-                tt, = template_stream
-                sc = continuous_stream.select(station=ss, channel=ich)
-                if sc:
-                    tc, = sc
-                    fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
-                    fct = np.nan_to_num(fct)
-                    stats = {"network": tc.stats.network,
-                             "station": tc.stats.station,
-                             "location": "",
-                             "channel": tc.stats.channel,
-                             "starttime": tc.stats.starttime,
-                             "npts": len(fct),
-                             "sampling_rate": tc.stats.sampling_rate,
-                             "mseed": {"dataquality": "D"}}
-                    correlation_stream += Trace(data=fct, header=stats)
-                else:
-                    logging.debug("No stream is found")
-            else:
-                logging.debug(f"{template_path} is empty")
+    for template_path in Path(settings['temp_dir']).glob(f"{template_number}.*.mseed"):
+        try:
+            with template_path.open('rb') as template_file:
+                template_stream = read(template_file, dtype="float32")
+            tt, = template_stream
+            sc = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
+            if sc:
+                tc, = sc
+                fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
+                fct = np.nan_to_num(fct)
+                header = {"network": tc.stats.network,
+                          "station": tc.stats.station,
+                          "channel": tc.stats.channel,
+                          "starttime": tc.stats.starttime,
+                          "npts": len(fct),
+                          "sampling_rate": tc.stats.sampling_rate,
+                          "mseed": {"dataquality": "D"}}
+                correlation_stream += Trace(data=fct, header=header)
+        except Exception as err:
+            logging.debug(f"{err} while processing {template_path}")
     return correlation_stream
 
 
@@ -182,7 +177,7 @@ def stack(correlation_stream, travel_times, settings):
     return stall, ccmad, tdifmin
 
 
-def csc(stall, stcc, trg, tstda, settings):
+def csc(stall, tcft, trg, tstda, settings):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -196,7 +191,6 @@ def csc(stall, stcc, trg, tstda, settings):
     nch_min = settings['nch_min']
 
     trigger_time = trg["time"]
-    tcft = stcc[0]
     t0_tcft = tcft.stats.starttime
     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
     trigger_sample = round(trigger_shift / tcft.stats.delta)

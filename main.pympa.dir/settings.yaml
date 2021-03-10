@@ -1,32 +1,3 @@
-stations:
-  - APEC
-  - ATBU
-  - ATCA
-  - ATCC
-  - ATFO
-  - ATLO
-  - ATPC
-  - ATPI
-  - ATSC
-  - ATVO
-  - BADI
-  - FOSV
-  - FRON
-  - MURB
-  - NARO
-  - PARC
-  - PIEI
-  - PE3
-  - SSFR
-channels:
-  - EHE
-  - EHN
-  - EHZ
-  - HHE
-  - HHN
-  - HHZ
-networks:
-  - IV
 lowpassf: 3.0
 highpassf: 8.0
 sample_tol: 6

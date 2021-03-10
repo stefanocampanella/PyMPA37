@@ -48,18 +48,18 @@ if __name__ == '__main__':
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
     events_list = []
-    for itemp in range(*settings['template_range']):
-        travel_times = get_travel_times(itemp, settings)
-        template_stream = get_template_stream(itemp, travel_times, settings)
+    for template_number in range(*settings['template_range']):
+        travel_times = get_travel_times(template_number, settings)
+        template_stream = get_template_stream(template_number, travel_times, settings)
         if len(template_stream) >= settings['nch_min']:
-            mt = catalog[itemp].magnitudes[0].mag
+            mt = catalog[template_number].magnitudes[0].mag
             for day in listdays(*settings['date_range']):
                 day_stream = get_continuous_stream(template_stream, day, settings)
                 if len(day_stream) >= settings['nch_min']:
-                    new_events = find_events(itemp, template_stream, day_stream, travel_times, mt, settings)
+                    new_events = find_events(template_number, template_stream, day_stream, travel_times, mt, settings)
                     events_list.extend(new_events)
                 else:
-                    logging.info(f"{day}, not enough channels for template {itemp} (nch_min: {settings['nch_min']}")
+                    logging.info(f"{day}, not enough channels for template {template_number} (nch_min: {settings['nch_min']}")
 
     with open("output.stats", "w") as file:
         for event in events_list:
