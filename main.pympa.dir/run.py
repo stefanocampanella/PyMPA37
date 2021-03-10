@@ -31,6 +31,7 @@
 # Python "bottleneck" utilities to speed up numpy array operations
 #
 import logging
+import sys
 from time import perf_counter as timer
 
 from obspy import UTCDateTime
@@ -40,10 +41,10 @@ from yaml import load, FullLoader
 from pympa import get_travel_times, get_template_stream, listdays, get_continuous_stream, find_events
 
 if __name__ == '__main__':
-    logging.basicConfig(filename='run.log', filemode='w', format='%(levelname)s: %(message)s')
     start_time = timer()
-    with open('settings.yaml') as file:
+    with open(sys.argv[1]) as file:
         settings = load(file, FullLoader)
+    logging.basicConfig(filename=settings['log'], filemode='w', format='%(levelname)s: %(message)s', level=logging.DEBUG)
     catalog = read_events(settings['ev_catalog'])
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
@@ -61,11 +62,11 @@ if __name__ == '__main__':
                 else:
                     logging.info(f"{day}, not enough channels for template {template_number} (nch_min: {settings['nch_min']}")
 
-    with open("output.stats", "w") as file:
+    with open(settings['output'], "w") as file:
         for event in events_list:
             file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
             for channel in event[-1]:
                 str22 = "%s %s %s %s \n" % channel
                 file.write(str22)
 
-    print(" elapsed time ", timer() - start_time, " seconds")
+    print("elapsed time ", timer() - start_time, " seconds")
