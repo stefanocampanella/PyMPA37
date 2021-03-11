@@ -15,6 +15,5 @@ factor_thre: 8
 stdup: 1.5
 stddown: 0.25
 chan_max: 12
-nchunk: 1
 log: run.log
 output: output.stats
