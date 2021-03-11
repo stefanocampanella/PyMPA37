@@ -1,5 +1,4 @@
 import argparse
-import io
 import logging
 import sys
 from pathlib import Path
@@ -25,8 +24,7 @@ cli_args = parser.parse_args()
 with resources.open_text('pympa', 'defaults.yaml') as default_settings_file:
     default_settings = load(default_settings_file, FullLoader)
 
-logging.basicConfig(filename=sys.stdout,
-                    filemode='w',
+logging.basicConfig(stream=sys.stderr,
                     format='%(levelname)s: %(message)s',
                     level=logging.DEBUG)
 
@@ -84,8 +82,7 @@ if __name__ == '__main__':
                                                     freqmin=settings['lowpassf'],
                                                     freqmax=settings['highpassf'])
                 if len(day_stream) >= settings['nch_min']:
-                    new_events = find_events(templates_dir_path,
-                                             template_number,
+                    new_events = find_events(template_number,
                                              template_stream,
                                              day_stream,
                                              travel_times,
@@ -94,7 +91,7 @@ if __name__ == '__main__':
                     events_list.extend(new_events)
                 else:
                     logging.info(f"{day}, not enough channels for "
-                                 f"template {template_number} (nch_min: {settings['nch_min']}")
+                                 f"template {template_number} (nch_min={settings['nch_min']})")
 
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs at {output_path}")

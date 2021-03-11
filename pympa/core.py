@@ -1,6 +1,6 @@
 import datetime
 from math import log10
-from pathlib import Path
+from functools import lru_cache
 
 import numpy as np
 import logging
@@ -10,7 +10,7 @@ from obspy.signal.trigger import coincidence_trigger
 
 
 def range_days(start, stop):
-    date = UTCDateTime(start)
+    date = start
     while date < stop:
         yield date
         date += datetime.timedelta(days=1)
@@ -46,29 +46,35 @@ def read_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, 
     for _, st, ch in channel_list:
         try:
             filepath = continuous_dir_path / f"{day.strftime('%y%m%d')}.{st}.{ch}"
-            with filepath.open('rb') as file:
-                stream = read(file, dtype="float32")
-                stream.merge(method=1, fill_value=0)
-                trace, = stream
-                trace.detrend("constant")
-                trace.trim(starttime=day,
-                           endtime=day + datetime.timedelta(days=1),
-                           pad=True,
-                           fill_value=0)
-                trace.filter("bandpass",
-                             freqmin=freqmin,
-                             freqmax=freqmax,
-                             zerophase=True)
-                continuous_stream += trace
+            continuous_stream += read_continuous_trace(filepath, day, freqmin, freqmax)
         except Exception as err:
-            logging.debug(f"{err} while reading day {day}")
+            logging.warning(f"{err}")
 
     return continuous_stream
 
 
-def find_events(templates_dir_path, template_number, template_stream, continuous_stream, travel_times, mt, settings):
+@lru_cache
+def read_continuous_trace(filepath, day, freqmin, freqmax):
+    with filepath.open('rb') as file:
+        stream = read(file, dtype="float32")
+        stream.merge(method=1, fill_value=0)
+        trace, = stream
+        trace.detrend("constant")
+        begin = UTCDateTime(day)
+        trace.trim(starttime=begin,
+                   endtime=begin + datetime.timedelta(days=1),
+                   pad=True,
+                   fill_value=0)
+        trace.filter("bandpass",
+                     freqmin=freqmin,
+                     freqmax=freqmax,
+                     zerophase=True)
+    return trace
+
+
+def find_events(template_number, template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
-    correlation_stream = read_correlation_stream(templates_dir_path, template_number, continuous_stream)
+    correlation_stream = compute_correlation_stream(template_stream, continuous_stream)
     stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
     if stall and ccmad is not None and tdifmin is not None:
         # compute mean absolute deviation of abs(ccmad)
@@ -101,13 +107,10 @@ def find_events(templates_dir_path, template_number, template_stream, continuous
     return events_list
 
 
-def read_correlation_stream(templates_dir_path, template_number, continuous_stream):
+def compute_correlation_stream(template_stream, continuous_stream):
     correlation_stream = Stream()
-    for template_path in templates_dir_path.glob(f"{template_number}.*.mseed"):
+    for tt in template_stream:
         try:
-            with template_path.open('rb') as template_file:
-                template_stream = read(template_file, dtype="float32")
-            tt, = template_stream
             sc = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
             if sc:
                 tc, = sc
@@ -122,7 +125,7 @@ def read_correlation_stream(templates_dir_path, template_number, continuous_stre
                           "mseed": {"dataquality": "D"}}
                 correlation_stream += Trace(data=fct, header=header)
         except Exception as err:
-            logging.debug(f"{err} while processing {template_path}")
+            logging.debug(f"{err} while processing station {tt.stats.station}, channel {tt.stats.channel}")
     return correlation_stream
 
 
