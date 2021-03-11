@@ -16,7 +16,7 @@ def range_days(start, stop):
         date += datetime.timedelta(days=1)
 
 
-def get_travel_times(travel_times_dir_path, template_number, chan_max=12):
+def read_travel_times(travel_times_dir_path, template_number, chan_max=12):
     travel_times = {}
     with open(travel_times_dir_path / f"{template_number}.ttimes", "r") as file:
         while line := file.readline():
@@ -31,7 +31,7 @@ def get_travel_times(travel_times_dir_path, template_number, chan_max=12):
     return travel_times
 
 
-def get_template_stream(templates_dir_path, template_number, channel_list):
+def read_template_stream(templates_dir_path, template_number, channel_list):
     template_stream = Stream()
     for net, sta, chn in channel_list:
         filepath = templates_dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
@@ -41,7 +41,7 @@ def get_template_stream(templates_dir_path, template_number, channel_list):
     return template_stream
 
 
-def get_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, freqmax=8.0):
+def read_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, freqmax=8.0):
     continuous_stream = Stream()
     for _, st, ch in channel_list:
         try:
@@ -66,9 +66,9 @@ def get_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, f
     return continuous_stream
 
 
-def find_events(template_number, template_stream, continuous_stream, travel_times, mt, settings):
+def find_events(templates_dir_path, template_number, template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
-    correlation_stream = get_correlation_stream(template_number, continuous_stream, settings)
+    correlation_stream = read_correlation_stream(templates_dir_path, template_number, continuous_stream)
     stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
     if stall and ccmad is not None and tdifmin is not None:
         # compute mean absolute deviation of abs(ccmad)
@@ -101,9 +101,9 @@ def find_events(template_number, template_stream, continuous_stream, travel_time
     return events_list
 
 
-def get_correlation_stream(template_number, continuous_stream, settings):
+def read_correlation_stream(templates_dir_path, template_number, continuous_stream):
     correlation_stream = Stream()
-    for template_path in Path(settings['temp_dir']).glob(f"{template_number}.*.mseed"):
+    for template_path in templates_dir_path.glob(f"{template_number}.*.mseed"):
         try:
             with template_path.open('rb') as template_file:
                 template_stream = read(template_file, dtype="float32")
