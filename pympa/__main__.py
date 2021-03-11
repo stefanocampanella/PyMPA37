@@ -3,11 +3,12 @@ import logging
 import sys
 from pathlib import Path
 from time import perf_counter as timer
+import importlib.resources as resources
 
 from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader
-import importlib.resources as resources
+from tqdm.auto import trange
 
 from pympa.core import read_travel_times, read_template_stream, range_days, read_continuous_stream, find_events
 
@@ -26,7 +27,7 @@ with resources.open_text('pympa', 'defaults.yaml') as default_settings_file:
 
 logging.basicConfig(stream=sys.stderr,
                     format='%(levelname)s: %(message)s',
-                    level=logging.DEBUG)
+                    level=logging.WARNING)
 
 if __name__ == '__main__':
     tic = timer()
@@ -66,7 +67,7 @@ if __name__ == '__main__':
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
     events_list = []
-    for template_number in range(*settings['template_range']):
+    for template_number in trange(*settings['template_range']):
         travel_times = read_travel_times(travel_times_dir_path,
                                          template_number,
                                          chan_max=settings['chan_max'])
