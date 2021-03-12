@@ -177,7 +177,6 @@ def csc(stall, tcft, trg, settings):
     # important parameters: a sample_tolerance less than 2 results often in wrong magnitudes
     sample_tolerance = settings['sample_tol']
     single_channelcft = settings['cc_threshold']
-    nch_min = settings['nch_min']
 
     trigger_time = trg["time"]
     t0_tcft = tcft.stats.starttime
@@ -232,10 +231,3 @@ def magnitude(continuous_stream, template_stream, trigger_time, mt, settings):
     md_tail = np.abs(md - np.median(md))
     mdr = md[md_tail <= 2 * np.median(md_tail)]
     return mdr.mean()
-
-
-def mad(dmad):
-    """
-    calculate daily median absolute deviation
-    """
-    return np.mean(abs(dmad - np.median(dmad)))
