@@ -147,8 +147,8 @@ def stack(correlation_stream, travel_times, settings):
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
     if len(stall) >= settings['nch_min']:
-        std_trac = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
-        std_trac = std_trac / np.nanmean(std_trac)
+        std_trac = np.fromiter((np.std(abs(tr.data)) for tr in stall), dtype=float)
+        std_trac = std_trac / std_trac.mean()
         for std, tr in zip(std_trac, stall):
             if std <= settings['stddown'] or std >= settings['stdup']:
                 stall.remove(tr)
@@ -159,7 +159,7 @@ def stack(correlation_stream, travel_times, settings):
                   "starttime": min(tr.stats.starttime for tr in stall),
                   "sampling_rate": stall[0].stats.sampling_rate,
                   "npts": stall[0].stats.npts}
-        ccmad = Trace(data=np.nanmean([tr.data for tr in stall], axis=0), header=header)
+        ccmad = Trace(data=np.mean([tr.data for tr in stall], axis=0), header=header)
     else:
         ccmad = None
 
@@ -200,8 +200,8 @@ def csc(stall, tcft, trg, settings):
 
     nch = (max_sct > single_channelcft).sum()
     nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
-    cft_ave = np.nanmean(max_sct)
-    cft_ave_trg = np.nanmean(max_trg)
+    cft_ave = np.mean(max_sct)
+    cft_ave_trg = np.mean(max_trg)
     max_sct = max_sct.T
     max_trg = max_trg.T
     chan_sct = chan_sct.T
