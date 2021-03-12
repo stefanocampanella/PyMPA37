@@ -66,7 +66,7 @@ if __name__ == '__main__':
 
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
-    events_list = []
+    events_found = {}
     for template_number in trange(*settings['template_range']):
         travel_times = read_travel_times(travel_times_dir_path,
                                          template_number,
@@ -83,13 +83,12 @@ if __name__ == '__main__':
                                                     freqmin=settings['lowpassf'],
                                                     freqmax=settings['highpassf'])
                 if len(day_stream) >= settings['nch_min']:
-                    new_events = find_events(template_number,
-                                             template_stream,
+                    new_events = find_events(template_stream,
                                              day_stream,
                                              travel_times,
                                              mt,
                                              settings)
-                    events_list.extend(new_events)
+                    events_found[template_number] = new_events
                 else:
                     logging.info(f"{day}, not enough channels for "
                                  f"template {template_number} (nch_min={settings['nch_min']})")
@@ -97,11 +96,13 @@ if __name__ == '__main__':
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs at {output_path}")
     with open(output_path, "w") as output_file:
-        for event in events_list:
-            output_file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
-            for channel in event[-1]:
-                str22 = "%s %s %s %s \n" % channel
-                output_file.write(str22)
+        for template_number, events_list in events_found.items():
+            output_file.write(f"==== event list begin for template {template_number} ====\n")
+            for event in events_list:
+                output_file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
+                for channel in event[-1]:
+                    output_file.write(" ".join(f"{x}" for x in channel) + "\n")
+            output_file.write(f"==== event list end ====\n\n")
 
     toc = timer()
     print(f"Elapsed time: {toc - tic:.2f} seconds.")

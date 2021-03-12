@@ -72,39 +72,40 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
     return trace
 
 
-def find_events(template_number, template_stream, continuous_stream, travel_times, mt, settings):
+def find_events(template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
     correlation_stream = compute_correlation_stream(template_stream, continuous_stream)
-    stall, ccmad, tdifmin = stack(correlation_stream, travel_times, settings)
-    if stall and ccmad is not None and tdifmin is not None:
+    stall, ccmad = stack(correlation_stream, travel_times, settings)
+    if stall and ccmad is not None:
         # compute mean absolute deviation of abs(ccmad)
-        tstda = mad(ccmad.data)
+        tstda = abs(ccmad.data - np.median(ccmad.data)).mean()
         # define threshold as 9 times std  and quality index
         threshold = settings['factor_thre'] * tstda
         # Run coincidence trigger on a single CC trace resulting from the CFTs stack
         # essential threshold parameters Cross correlation thresholds
         triglist = coincidence_trigger(None,
                                        threshold,
-                                       threshold - 0.15 * threshold,
+                                       0.85 * threshold,
                                        Stream(ccmad),
-                                       1.0,
-                                       trace_ids=None,
-                                       similarity_thresholds={"BH": threshold},
-                                       delete_long_trigger=False,
-                                       trigger_off_extension=3.0,
-                                       details=True)
-        # find minimum time to recover origin time
-        min_time_value = min(travel_times.values())
+                                       1.0)
         for trg in triglist:
-            stats = csc(stall, ccmad, trg, tstda, settings)
-            if stats:
-                nch = stats[0]
-                tt = trg["time"] + 2 * min_time_value - tdifmin
-                if nch >= settings['nch_min']:
-                    mdr = magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings)
-                    record = (template_number, tt, mdr, mt, tstda, *stats)
-                    events_list.append(record)
+            nch, stats, channel_list = csc(stall, ccmad, trg, settings)
+            if nch >= settings['nch_min']:
+                mdr = magnitude(continuous_stream, template_stream, trg['time'], mt, settings)
+                tt = trg["time"] + time_diff_min(stall, travel_times)
+                record = (tt, mdr, tstda, stats, channel_list)
+                events_list.append(record)
     return events_list
+
+
+def time_diff_min(stall, travel_times):
+    time_diff = []
+    for tr in stall:
+        net = tr.stats.network
+        station = tr.stats.station
+        channel = tr.stats.channel
+        time_diff.append(travel_times[(net, station, channel)])
+    return min(time_diff)
 
 
 def compute_correlation_stream(template_stream, continuous_stream):
@@ -146,25 +147,12 @@ def stack(correlation_stream, travel_times, settings):
         stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
     if len(stall) >= settings['nch_min']:
-        stdup = settings['stdup']
-        stddown = settings['stddown']
         std_trac = np.fromiter((np.nanstd(abs(tr.data)) for tr in stall), dtype=float)
-        avestd = np.nanmean(std_trac)
-        avestdup = avestd * stdup
-        avestddw = avestd * stddown
-
-        td = np.empty(len(stall))
-        for jtr, tr in enumerate(stall):
-            if std_trac[jtr] >= avestdup or std_trac[jtr] <= avestddw:
+        std_trac = std_trac / np.nanmean(std_trac)
+        for std, tr in zip(std_trac, stall):
+            if std <= settings['stddown'] or std >= settings['stdup']:
                 stall.remove(tr)
-                logging.debug(f"Removed Trace n Stream = {tr} {std_trac[jtr]} {avestd}")
-                td[jtr] = 99.99
-            else:
-                sta = tr.stats.station
-                chan = tr.stats.channel
-                net = tr.stats.network
-                td[jtr] = travel_times[(net, sta, chan)]
-        tdifmin = min(td)
+                logging.debug(f"Removed Trace n Stream = {tr} {std}")
         header = {"network": "STACK",
                   "station": "BH",
                   "channel": "XX",
@@ -173,13 +161,12 @@ def stack(correlation_stream, travel_times, settings):
                   "npts": stall[0].stats.npts}
         ccmad = Trace(data=np.nanmean([tr.data for tr in stall], axis=0), header=header)
     else:
-        tdifmin = None
         ccmad = None
 
-    return stall, ccmad, tdifmin
+    return stall, ccmad
 
 
-def csc(stall, tcft, trg, tstda, settings):
+def csc(stall, tcft, trg, settings):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -211,84 +198,44 @@ def csc(stall, tcft, trg, tstda, settings):
         max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
         max_ind[icft] = sample_tolerance - max_ind[icft]
         max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
+
     nch = (max_sct > single_channelcft).sum()
-
-    if nch >= nch_min:
-        nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
-        cft_ave = np.nanmean(max_sct)
-        crt = cft_ave / tstda
-        cft_ave_trg = np.nanmean(max_trg)
-        crt_trg = cft_ave_trg / tstda
-        max_sct = max_sct.T
-        max_trg = max_trg.T
-        chan_sct = chan_sct.T
-        channels_list = []
-        for idchan in range(len(max_sct)):
-            record = (chan_sct[idchan].decode(), max_trg[idchan], max_sct[idchan], max_ind[idchan])
-            channels_list.append(record)
-        return nch, cft_ave, crt, cft_ave_trg, crt_trg, nch03, nch05, nch07, nch09, channels_list
-    else:
-        return None
+    nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
+    cft_ave = np.nanmean(max_sct)
+    cft_ave_trg = np.nanmean(max_trg)
+    max_sct = max_sct.T
+    max_trg = max_trg.T
+    chan_sct = chan_sct.T
+    channels_list = []
+    for idchan in range(len(max_sct)):
+        record = (chan_sct[idchan].decode(), max_trg[idchan], max_sct[idchan], max_ind[idchan])
+        channels_list.append(record)
+    return nch, (cft_ave, cft_ave_trg, nch03, nch05, nch07, nch09), channels_list
 
 
-def magnitude(continuous_stream, template_stream, tt, tdifmin, mt, settings):
-    # for each trigger, detrended, and filtered continuous
-    # data channels are trimmed and amplitude useful to
-    # estimate magnitude is measured.
-    # tdifmin is computed for contributing channels within the stack function
-    md = np.zeros(len(continuous_stream))
-    for il, tc in enumerate(continuous_stream):
-        ss = tc.stats.station
-        ich = tc.stats.channel
-        if template_stream.select(station=ss, channel=ich):
-            template_trace, = template_stream.select(station=ss, channel=ich)
-            uts = template_trace.stats.starttime
-            # reference time to be used for retrieving time synchronization
-            reft = min(tr.stats.starttime for tr in template_stream)
-            timestart = tt - tdifmin + (uts - reft)
+def magnitude(continuous_stream, template_stream, trigger_time, mt, settings):
+    reft = min(tr.stats.starttime for tr in template_stream)
+    md = []
+    for continuous_trace in continuous_stream:
+        ss = continuous_trace.stats.station
+        ich = continuous_trace.stats.channel
+        if stream := template_stream.select(station=ss, channel=ich):
+            template_trace, = stream
+            timestart = trigger_time + (template_trace.stats.starttime - reft)
             timend = timestart + settings['temp_length']
-            ta = tc.copy()
-            ta.trim(starttime=timestart, endtime=timend, pad=True, fill_value=0)
-            damaxac = max(abs(ta.data))
-            dtt = max(abs(template_trace.data))
-            if damaxac != 0 and dtt != 0:
-                md[il] = mag_detect(mt, dtt, damaxac)
-    mdr = reject_moutliers(md)
+            continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
+            amaxd = max(abs(continuous_trace_view.data))
+            amaxt = max(abs(template_trace.data))
+            magd = mt - log10(amaxt / amaxd)
+            md.append(magd)
+    md = np.array(md)
+    md_tail = np.abs(md - np.median(md))
+    mdr = md[md_tail <= 2 * np.median(md_tail)]
     return mdr.mean()
-
-
-def mag_detect(magt, amaxt, amaxd):
-    """
-    mag_detect(mag_temp,amax_temp,amax_detect)
-    Returns the magnitude of the new detection by using the template/detection
-    amplitude trace ratio
-    and the magnitude of the template event
-    """
-    amaxr = amaxt / amaxd
-    magd = magt - log10(amaxr)
-    return magd
-
-
-def reject_moutliers(data, m=1.0):
-    nonzeroind = np.nonzero(data)[0]
-    nzlen = len(nonzeroind)
-    data = data[nonzeroind]
-    datamed = np.nanmedian(data)
-    d = np.abs(data - datamed)
-    mdev = 2 * np.median(d)
-    if mdev == 0:
-        inds = np.arange(nzlen)
-        data[inds] = datamed
-    else:
-        s = d / mdev
-        inds = np.where(s <= m)
-    return data[inds]
 
 
 def mad(dmad):
     """
     calculate daily median absolute deviation
     """
-    ccm = dmad[dmad != 0]
-    med_val = np.nanmedian(ccm)
-    return np.nansum(abs(ccm - med_val) / len(ccm))
+    return np.mean(abs(dmad - np.median(dmad)))
