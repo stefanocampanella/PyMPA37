@@ -70,15 +70,16 @@ if __name__ == '__main__':
     for template_number in trange(*settings['template_range']):
         travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
                                          chan_max=settings['chan_max'])
+        channels = tuple(travel_times.keys())
         template_stream = read_template_stream(templates_dir_path,
                                                template_number,
-                                               travel_times.keys())
+                                               channels)
         if len(template_stream) >= settings['nch_min']:
             mt = catalog[template_number].magnitudes[0].mag
             for day in range_days(*settings['date_range']):
                 day_stream = read_continuous_stream(continuous_dir_path,
                                                     day,
-                                                    travel_times.keys(),
+                                                    channels,
                                                     freqmin=settings['lowpassf'],
                                                     freqmax=settings['highpassf'])
                 if len(day_stream) >= settings['nch_min']:

@@ -15,6 +15,7 @@ def range_days(start, stop):
         yield date
         date += datetime.timedelta(days=1)
 
+
 @lru_cache
 def read_travel_times(travel_times_path, chan_max=12):
     travel_times = {}
@@ -30,6 +31,7 @@ def read_travel_times(travel_times_path, chan_max=12):
     travel_times = {key: travel_times[key] for key in keys}
     return travel_times
 
+@lru_cache
 def read_template_stream(templates_dir_path, template_number, channel_list):
     template_stream = Stream()
     for net, sta, chn in channel_list:
