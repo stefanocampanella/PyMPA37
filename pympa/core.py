@@ -15,10 +15,10 @@ def range_days(start, stop):
         yield date
         date += datetime.timedelta(days=1)
 
-
-def read_travel_times(travel_times_dir_path, template_number, chan_max=12):
+@lru_cache
+def read_travel_times(travel_times_path, chan_max=12):
     travel_times = {}
-    with open(travel_times_dir_path / f"{template_number}.ttimes", "r") as file:
+    with open(travel_times_path, "r") as file:
         while line := file.readline():
             key, value = line.split(' ')
             key = tuple(key.split('.'))
@@ -29,7 +29,6 @@ def read_travel_times(travel_times_dir_path, template_number, chan_max=12):
         keys = keys[:chan_max]
     travel_times = {key: travel_times[key] for key in keys}
     return travel_times
-
 
 def read_template_stream(templates_dir_path, template_number, channel_list):
     template_stream = Stream()

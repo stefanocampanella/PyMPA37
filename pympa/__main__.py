@@ -68,8 +68,7 @@ if __name__ == '__main__':
 
     events_found = {}
     for template_number in trange(*settings['template_range']):
-        travel_times = read_travel_times(travel_times_dir_path,
-                                         template_number,
+        travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
                                          chan_max=settings['chan_max'])
         template_stream = read_template_stream(templates_dir_path,
                                                template_number,
