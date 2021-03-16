@@ -31,14 +31,18 @@ def read_travel_times(travel_times_path, chan_max=12):
     travel_times = {key: travel_times[key] for key in keys}
     return travel_times
 
+
 @lru_cache
 def read_template_stream(templates_dir_path, template_number, channel_list):
     template_stream = Stream()
     for net, sta, chn in channel_list:
-        filepath = templates_dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
-        with filepath.open('rb') as file:
-            logging.debug(f"Reading {filepath}")
-            template_stream += read(file, dtype="float32")
+        try:
+            filepath = templates_dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
+            with filepath.open('rb') as file:
+                logging.debug(f"Reading {filepath}")
+                template_stream += read(file, dtype="float32")
+        except Exception as err:
+            logging.warning(f"{err}")
     return template_stream
 
 
@@ -77,25 +81,22 @@ def find_events(template_stream, continuous_stream, travel_times, mt, settings):
     events_list = []
     correlation_stream = compute_correlation_stream(template_stream, continuous_stream)
     stall, ccmad = stack(correlation_stream, travel_times, settings)
-    if stall and ccmad is not None:
-        # compute mean absolute deviation of abs(ccmad)
-        tstda = abs(ccmad.data - np.median(ccmad.data)).mean()
-        # define threshold as 9 times std  and quality index
-        threshold = settings['factor_thre'] * tstda
-        # Run coincidence trigger on a single CC trace resulting from the CFTs stack
-        # essential threshold parameters Cross correlation thresholds
-        triglist = coincidence_trigger(None,
-                                       threshold,
-                                       0.85 * threshold,
-                                       Stream(ccmad),
-                                       1.0)
-        for trg in triglist:
-            nch, stats, channel_list = csc(stall, ccmad, trg, settings)
-            if nch >= settings['nch_min']:
-                mdr = magnitude(continuous_stream, template_stream, trg['time'], mt, settings)
-                tt = trg["time"] + time_diff_min(stall, travel_times)
-                record = (tt, mdr, tstda, stats, channel_list)
-                events_list.append(record)
+    tstda = abs(ccmad.data - np.median(ccmad.data)).mean()
+    threshold = settings['factor_thre'] * tstda
+    # Run coincidence trigger on a single CC trace resulting from the CFTs stack
+    # essential threshold parameters Cross correlation thresholds
+    triggers = coincidence_trigger(None,
+                                   threshold,
+                                   0.85 * threshold,
+                                   Stream(ccmad),
+                                   1.0)
+    for trigger in triggers:
+        nch, stats, channel_list = csc(stall, ccmad, trigger, settings)
+        if nch >= settings['nch_min']:
+            mdr = magnitude(continuous_stream, template_stream, trigger['time'], mt, settings)
+            tt = trigger["time"] + time_diff_min(stall, travel_times)
+            record = (tt, mdr, tstda, stats, channel_list)
+            events_list.append(record)
     return events_list
 
 
@@ -112,22 +113,17 @@ def time_diff_min(stall, travel_times):
 def compute_correlation_stream(template_stream, continuous_stream):
     correlation_stream = Stream()
     for tt in template_stream:
-        try:
-            sc = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
-            if sc:
-                tc, = sc
-                fct = correlate_template(tc.data, tt.data)
-                fct = np.nan_to_num(fct)
-                header = {"network": tc.stats.network,
-                          "station": tc.stats.station,
-                          "channel": tc.stats.channel,
-                          "starttime": tc.stats.starttime,
-                          "npts": len(fct),
-                          "sampling_rate": tc.stats.sampling_rate,
-                          "mseed": {"dataquality": "D"}}
-                correlation_stream += Trace(data=fct, header=header)
-        except Exception as err:
-            logging.debug(f"{err} while processing station {tt.stats.station}, channel {tt.stats.channel}")
+        tc, = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
+        fct = correlate_template(tc.data, tt.data)
+        fct = np.nan_to_num(fct)
+        header = {"network": tc.stats.network,
+                  "station": tc.stats.station,
+                  "channel": tc.stats.channel,
+                  "starttime": tc.stats.starttime,
+                  "npts": len(fct),
+                  "sampling_rate": tc.stats.sampling_rate,
+                  "mseed": {"dataquality": "D"}}
+        correlation_stream += Trace(data=fct, header=header)
     return correlation_stream
 
 
@@ -139,35 +135,30 @@ def stack(correlation_stream, travel_times, settings):
     the earliest startime within the stream
     """
     stall = Stream()
-    for tc_cft in correlation_stream:
-        sta = tc_cft.stats.station
-        chan = tc_cft.stats.channel
-        net = tc_cft.stats.network
-        tstart = tc_cft.stats.starttime + travel_times[(net, sta, chan)]
+    for trace in correlation_stream:
+        key = trace.stats.network, trace.stats.station, trace.stats.channel
+        tstart = trace.stats.starttime + travel_times[key]
         tend = tstart + datetime.timedelta(days=1)
-        stall += tc_cft.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
+        stall += trace.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
 
-    if len(stall) >= settings['nch_min']:
-        std_trac = np.fromiter((np.std(abs(tr.data)) for tr in stall), dtype=float)
-        std_trac = std_trac / std_trac.mean()
-        for std, tr in zip(std_trac, stall):
-            if std <= settings['stddown'] or std >= settings['stdup']:
-                stall.remove(tr)
-                logging.debug(f"Removed Trace n Stream = {tr} {std}")
-        header = {"network": "STACK",
-                  "station": "BH",
-                  "channel": "XX",
-                  "starttime": min(tr.stats.starttime for tr in stall),
-                  "sampling_rate": stall[0].stats.sampling_rate,
-                  "npts": stall[0].stats.npts}
-        ccmad = Trace(data=np.mean([tr.data for tr in stall], axis=0), header=header)
-    else:
-        ccmad = None
+    std_trac = np.fromiter((np.std(abs(tr.data)) for tr in stall), dtype=float)
+    std_trac = std_trac / std_trac.mean()
+    for std, tr in zip(std_trac, stall):
+        if std <= settings['stddown'] or std >= settings['stdup']:
+            stall.remove(tr)
+            logging.debug(f"Removed Trace n Stream = {tr} {std}")
+    header = {"network": "STACK",
+              "station": "BH",
+              "channel": "XX",
+              "starttime": min(tr.stats.starttime for tr in stall),
+              "sampling_rate": stall[0].stats.sampling_rate,
+              "npts": stall[0].stats.npts}
+    ccmad = Trace(data=np.mean([tr.data for tr in stall], axis=0), header=header)
 
     return stall, ccmad
 
 
-def csc(stall, tcft, trg, settings):
+def csc(stall, ccmad, trigger, settings):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -179,23 +170,23 @@ def csc(stall, tcft, trg, settings):
     sample_tolerance = settings['sample_tol']
     single_channelcft = settings['cc_threshold']
 
-    trigger_time = trg["time"]
-    t0_tcft = tcft.stats.starttime
+    trigger_time = trigger["time"]
+    t0_tcft = ccmad.stats.starttime
     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
-    trigger_sample = round(trigger_shift / tcft.stats.delta)
+    trigger_sample = round(trigger_shift / ccmad.stats.delta)
     max_sct = np.empty(len(stall))
     max_trg = np.empty(len(stall))
     max_ind = np.empty(len(stall))
-    chan_sct = np.chararray((len(stall),), 12)
+    chan_sct = {}
 
     for icft, tsc in enumerate(stall):
         # get cft amplitude value at corresponding trigger and store it in
         # check for possible 2 sample shift and eventually change trg['cft_peaks']
-        chan_sct[icft] = (tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel)
+        chan_sct[icft] = tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
         tmp0 = max(trigger_sample - sample_tolerance, 0)
         tmp1 = trigger_sample + sample_tolerance + 1
         max_sct[icft] = max(tsc.data[tmp0:tmp1])
-        max_ind[icft] = np.nanargmax(tsc.data[tmp0:tmp1])
+        max_ind[icft] = np.argmax(tsc.data[tmp0:tmp1])
         max_ind[icft] = sample_tolerance - max_ind[icft]
         max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
 
@@ -203,12 +194,9 @@ def csc(stall, tcft, trg, settings):
     nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
     cft_ave = np.mean(max_sct)
     cft_ave_trg = np.mean(max_trg)
-    max_sct = max_sct.T
-    max_trg = max_trg.T
-    chan_sct = chan_sct.T
     channels_list = []
     for idchan in range(len(max_sct)):
-        record = (chan_sct[idchan].decode(), max_trg[idchan], max_sct[idchan], max_ind[idchan])
+        record = (chan_sct[idchan], max_trg[idchan], max_sct[idchan], max_ind[idchan])
         channels_list.append(record)
     return nch, (cft_ave, cft_ave_trg, nch03, nch05, nch07, nch09), channels_list
 

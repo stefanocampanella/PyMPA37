@@ -4,7 +4,6 @@ sample_tol: 6
 cc_threshold: 0.35
 nch_min: 6
 temp_length: 5
-utc_prec: 6
 date_range: [ 2010-07-23, 2010-07-24 ]
 template_range: [ 200, 204 ]
 factor_thre: 8

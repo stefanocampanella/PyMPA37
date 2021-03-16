@@ -5,7 +5,6 @@ from pathlib import Path
 from time import perf_counter as timer
 import importlib.resources as resources
 
-from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader
 from tqdm import tqdm
@@ -64,8 +63,6 @@ if __name__ == '__main__':
 
     catalog = read_events(catalog_path)
 
-    UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
-
     events_found = {}
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
@@ -75,26 +72,33 @@ if __name__ == '__main__':
             travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
                                              chan_max=settings['chan_max'])
             channels = tuple(travel_times.keys())
+            if len(channels) < settings['nch_min']:
+                logging.info(f"{day}, not enough channels in travel times for template {template_number}")
+                break
             template_stream = read_template_stream(templates_dir_path,
                                                    template_number,
                                                    channels)
-            if len(template_stream) >= settings['nch_min']:
-                mt = catalog[template_number].magnitudes[0].mag
-                day_stream = read_continuous_stream(continuous_dir_path,
-                                                    day,
-                                                    channels,
-                                                    freqmin=settings['lowpassf'],
-                                                    freqmax=settings['highpassf'])
-                if len(day_stream) >= settings['nch_min']:
-                    new_events = find_events(template_stream,
-                                             day_stream,
-                                             travel_times,
-                                             mt,
-                                             settings)
-                    events_found[template_number] = new_events
-                else:
-                    logging.info(f"{day}, not enough channels for "
-                             f"template {template_number} (nch_min={settings['nch_min']})")
+            if len(template_stream) < settings['nch_min']:
+                logging.info(f"{day}, not enough channels for template {template_number}")
+                break
+            mt = catalog[template_number].magnitudes[0].mag
+            day_stream = read_continuous_stream(continuous_dir_path,
+                                                day,
+                                                channels,
+                                                freqmin=settings['lowpassf'],
+                                                freqmax=settings['highpassf'])
+            if len(day_stream) < settings['nch_min']:
+                logging.info(f"{day}, not enough channels in continuous stream")
+                break
+            try:
+                new_events = find_events(template_stream,
+                                         day_stream,
+                                         travel_times,
+                                         mt,
+                                         settings)
+                events_found[template_number] = new_events
+            except Exception as err:
+                logging.warning(f"{err}")
 
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs at {output_path}")

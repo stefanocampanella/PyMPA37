@@ -4,10 +4,7 @@ sample_tol: 6
 cc_threshold: 0.35
 nch_min: 6
 temp_length: 5
-utc_prec: 6
 factor_thre: 8
 stdup: 1.5
 stddown: 0.25
 chan_max: 12
-log: pympa.log
-output: pympa.out
