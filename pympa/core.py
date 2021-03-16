@@ -116,7 +116,7 @@ def compute_correlation_stream(template_stream, continuous_stream):
             sc = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
             if sc:
                 tc, = sc
-                fct = correlate_template(tc.data, tt.data, normalize="full", method="auto")
+                fct = correlate_template(tc.data, tt.data)
                 fct = np.nan_to_num(fct)
                 header = {"network": tc.stats.network,
                           "station": tc.stats.station,

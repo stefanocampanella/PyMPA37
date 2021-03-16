@@ -8,7 +8,7 @@ import importlib.resources as resources
 from obspy import UTCDateTime
 from obspy.core.event import read_events
 from yaml import load, FullLoader
-from tqdm.auto import trange
+from tqdm import tqdm
 
 from pympa.core import read_travel_times, read_template_stream, range_days, read_continuous_stream, find_events
 
@@ -67,16 +67,19 @@ if __name__ == '__main__':
     UTCDateTime.DEFAULT_PRECISION = settings['utc_prec']
 
     events_found = {}
-    for template_number in trange(*settings['template_range']):
-        travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
-                                         chan_max=settings['chan_max'])
-        channels = tuple(travel_times.keys())
-        template_stream = read_template_stream(templates_dir_path,
-                                               template_number,
-                                               channels)
-        if len(template_stream) >= settings['nch_min']:
-            mt = catalog[template_number].magnitudes[0].mag
-            for day in range_days(*settings['date_range']):
+    start_date, end_date = settings['date_range']
+    num_days = (end_date - start_date).days
+    start_template, end_template = settings['template_range']
+    for day in tqdm(range_days(start_date, end_date), total=num_days):
+        for template_number in range(start_template, end_template):
+            travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
+                                             chan_max=settings['chan_max'])
+            channels = tuple(travel_times.keys())
+            template_stream = read_template_stream(templates_dir_path,
+                                                   template_number,
+                                                   channels)
+            if len(template_stream) >= settings['nch_min']:
+                mt = catalog[template_number].magnitudes[0].mag
                 day_stream = read_continuous_stream(continuous_dir_path,
                                                     day,
                                                     channels,
@@ -91,7 +94,7 @@ if __name__ == '__main__':
                     events_found[template_number] = new_events
                 else:
                     logging.info(f"{day}, not enough channels for "
-                                 f"template {template_number} (nch_min={settings['nch_min']})")
+                             f"template {template_number} (nch_min={settings['nch_min']})")
 
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs at {output_path}")
