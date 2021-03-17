@@ -144,15 +144,6 @@ def stack(stream, travel_times):
 
 def correct_correlations(stacked_stream, mean_correlation_trace, trigger_time,
                          correlation_threshold, sample_tolerance=6):
-    """
-    The function check single channel cft compute the maximum CFT's
-    values at each trigger time and counts the number of channels
-    having higher cross-correlation
-    nch, cft_ave, crt are re-evaluated on the basis of
-    +/- 2 sample approximation. Statistics are written in stat files
-    """
-    # important parameters: a sample_tolerance less than 2 results often in wrong magnitudes
-
     trigger_shift = trigger_time - mean_correlation_trace.stats.starttime
     trigger_sample = round(trigger_shift / mean_correlation_trace.stats.delta)
     correlations = []
