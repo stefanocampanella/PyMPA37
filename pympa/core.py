@@ -109,21 +109,23 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
 
 def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5)):
     correlation_stream = Stream()
-    for tt in template_stream:
-        network, station, channel = tt.stats.network, tt.stats.station, tt.stats.channel
-        tc, = continuous_stream.select(network=network, station=station, channel=channel)
-        fct = correlate_template(tc.data, tt.data)
-        fct = np.nan_to_num(fct)
-        header = {"network": tc.stats.network,
-                  "station": tc.stats.station,
-                  "channel": tc.stats.channel,
-                  "starttime": tc.stats.starttime,
-                  "sampling_rate": tc.stats.sampling_rate}
-        correlation_stream += Trace(data=fct, header=header)
+    for template_trace in template_stream:
+        network = template_trace.stats.network
+        station = template_trace.stats.station
+        channel = template_trace.stats.channel
+        continuous_trace, = continuous_stream.select(network=network, station=station, channel=channel)
+        correlation = correlate_template(continuous_trace.data, template_trace.data)
+        correlation = np.nan_to_num(correlation)
+        header = {"network": continuous_trace.stats.network,
+                  "station": continuous_trace.stats.station,
+                  "channel": continuous_trace.stats.channel,
+                  "starttime": continuous_trace.stats.starttime,
+                  "sampling_rate": continuous_trace.stats.sampling_rate}
+        correlation_stream += Trace(data=correlation, header=header)
 
-    std_trac = np.fromiter((np.std(abs(tr.data)) for tr in correlation_stream), dtype=float)
-    std_trac = std_trac / std_trac.mean()
-    for std, tr in zip(std_trac, correlation_stream):
+    trace_std = np.fromiter((np.std(abs(trace.data)) for trace in correlation_stream), dtype=float)
+    trace_std = trace_std / trace_std.mean()
+    for std, tr in zip(trace_std, correlation_stream):
         if std < std_range[0] or std > std_range[1]:
             correlation_stream.remove(tr)
             logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
@@ -156,31 +158,30 @@ def correct_correlations(stacked_stream, mean_correlation_trace, trigger_time,
         correlations.append(max(trace.data[lower:upper]))
         shifts.append(sample_tolerance - np.argmax(trace.data[lower:upper]))
 
-    nch = sum(1 for corr in correlations if corr > correlation_threshold)
+    num_channels = sum(1 for corr in correlations if corr > correlation_threshold)
     mean_correlation = np.mean(correlations)
     channels_list = []
     for idchan in range(len(correlations)):
         record = (keys[idchan], correlations[idchan], shifts[idchan])
         channels_list.append(record)
-    return nch, mean_correlation, channels_list
+    return num_channels, mean_correlation, channels_list
 
 
-def magnitude(continuous_stream, template_stream, trigger_time, mt):
+def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude):
     reft = min(tr.stats.starttime for tr in template_stream)
-    md = []
+    channel_magnitudes = []
     for continuous_trace in continuous_stream:
-        ss = continuous_trace.stats.station
-        ich = continuous_trace.stats.channel
-        if stream := template_stream.select(station=ss, channel=ich):
+        if stream := template_stream.select(station=continuous_trace.stats.station,
+                                            channel=continuous_trace.stats.channel):
             template_trace, = stream
             timestart = trigger_time + (template_trace.stats.starttime - reft)
             timend = timestart + (template_trace.stats.endtime - template_trace.stats.starttime)
             continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
-            amaxd = max(abs(continuous_trace_view.data))
-            amaxt = max(abs(template_trace.data))
-            magd = mt - log10(amaxt / amaxd)
-            md.append(magd)
-    md = np.array(md)
-    md_tail = np.abs(md - np.median(md))
-    mdr = md[md_tail <= 2 * np.median(md_tail)]
-    return mdr.mean()
+            continuous_absolute_max = max(abs(continuous_trace_view.data))
+            template_absolute_max = max(abs(template_trace.data))
+            event_magnitude = template_magnitude - log10(template_absolute_max / continuous_absolute_max)
+            channel_magnitudes.append(event_magnitude)
+    channel_magnitudes = np.array(channel_magnitudes)
+    absolute_deviations = np.abs(channel_magnitudes - np.median(channel_magnitudes))
+    valid_channel_magnitudes = channel_magnitudes[absolute_deviations <= 2 * np.median(absolute_deviations)]
+    return valid_channel_magnitudes.mean()
