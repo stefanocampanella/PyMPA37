@@ -2,7 +2,6 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from time import perf_counter as timer
 import importlib.resources as resources
 
 from obspy.core.event import read_events
@@ -29,7 +28,6 @@ logging.basicConfig(stream=sys.stderr,
                     level=logging.WARNING)
 
 if __name__ == '__main__':
-    tic = timer()
 
     templates_dir_path = Path(cli_args.templates_dir_path).resolve()
     if not templates_dir_path.is_dir():
@@ -63,10 +61,10 @@ if __name__ == '__main__':
 
     catalog = read_events(catalog_path)
 
-    events_found = {}
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
     start_template, end_template = settings['template_range']
+    events_found = {}
     for day in tqdm(range_days(start_date, end_date), total=num_days):
         for template_number in range(start_template, end_template):
             travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
@@ -81,7 +79,7 @@ if __name__ == '__main__':
             if len(template_stream) < settings['nch_min']:
                 logging.info(f"{day}, not enough channels for template {template_number}")
                 continue
-            mt = catalog[template_number].magnitudes[0].mag
+            template_magnitude = catalog[template_number].magnitudes[0].mag
             day_stream = read_continuous_stream(continuous_dir_path,
                                                 day,
                                                 channels,
@@ -94,7 +92,7 @@ if __name__ == '__main__':
                 new_events = correlation_detector(template_stream,
                                                   day_stream,
                                                   travel_times,
-                                                  mt,
+                                                  template_magnitude,
                                                   settings)
                 events_found[template_number] = new_events
             except Exception as err:
@@ -110,6 +108,3 @@ if __name__ == '__main__':
                 for channel in event[-1]:
                     output_file.write(" ".join(f"{x}" for x in channel) + "\n")
             output_file.write(f"==== event list end ====\n\n")
-
-    toc = timer()
-    print(f"Elapsed time: {toc - tic:.2f} seconds.")

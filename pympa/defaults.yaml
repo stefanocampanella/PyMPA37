@@ -3,8 +3,6 @@ highpassf: 8.0
 sample_tol: 6
 cc_threshold: 0.35
 nch_min: 6
-temp_length: 5
 factor_thre: 8
-stdup: 1.5
-stddown: 0.25
+std_range: [ 0.25, 1.5 ]
 chan_max: 12
