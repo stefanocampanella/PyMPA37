@@ -80,23 +80,29 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude, settings):
     events_list = []
     correlation_stream = correlate_streams(template_stream, continuous_stream, std_range=settings['std_range'])
-    stacked_stream, mean_correlation_trace = stack(correlation_stream, travel_times)
+    stacked_stream = stack(correlation_stream, travel_times)
+    mean_correlation_header = {"starttime": min(trace.stats.starttime for trace in stacked_stream),
+                               "sampling_rate": stacked_stream[0].stats.sampling_rate}
+    mean_correlation_trace = Trace(data=np.mean([trace.data for trace in stacked_stream], axis=0),
+                                   header=mean_correlation_header)
     mean_absolute_deviation = abs(mean_correlation_trace.data - np.median(mean_correlation_trace.data)).mean()
     threshold = settings['factor_thre'] * mean_absolute_deviation
-    # Run coincidence trigger on a single CC trace resulting from the CFTs to_wavefront_time
-    # essential threshold parameters Cross correlation thresholds
     triggers = coincidence_trigger(None,
                                    threshold,
-                                   0.85 * threshold,
+                                   0.0,
                                    Stream(mean_correlation_trace),
                                    0.0)
     reference_time = list(travel_times.values())[0]
     for trigger in triggers:
-        nch, stats, channel_list = csc(stacked_stream, mean_correlation_trace, trigger['time'], settings)
+        nch, mean_correlation, channel_list = correct_correlations(stacked_stream,
+                                                                   mean_correlation_trace,
+                                                                   trigger['time'],
+                                                                   settings['cc_threshold'],
+                                                                   sample_tolerance=settings['sample_tol'])
         if nch >= settings['nch_min']:
             event_magnitude = magnitude(continuous_stream, template_stream, trigger['time'], template_magnitude)
             event_time = trigger['time'] + reference_time
-            record = (event_time, event_magnitude, mean_absolute_deviation, stats, channel_list)
+            record = (event_time, event_magnitude, mean_absolute_deviation, mean_correlation, channel_list)
             events_list.append(record)
     return events_list
 
@@ -126,7 +132,6 @@ def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5))
 
 
 def stack(stream, travel_times):
-
     stacked_stream = stream.copy()
     for trace in stacked_stream:
         key = trace.stats.network, trace.stats.station, trace.stats.channel
@@ -134,14 +139,11 @@ def stack(stream, travel_times):
         endtime = starttime + datetime.timedelta(days=1)
         trace.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
 
-    header = {"starttime": min(trace.stats.starttime for trace in stacked_stream),
-              "sampling_rate": stacked_stream[0].stats.sampling_rate}
-    mean_correlation = Trace(data=np.mean([trace.data for trace in stacked_stream], axis=0), header=header)
-
-    return stacked_stream, mean_correlation
+    return stacked_stream
 
 
-def csc(correlation_stream, mean_correlation_trace, trigger_time, settings):
+def correct_correlations(stacked_stream, mean_correlation_trace, trigger_time,
+                         correlation_threshold, sample_tolerance=6):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -150,37 +152,26 @@ def csc(correlation_stream, mean_correlation_trace, trigger_time, settings):
     +/- 2 sample approximation. Statistics are written in stat files
     """
     # important parameters: a sample_tolerance less than 2 results often in wrong magnitudes
-    sample_tolerance = settings['sample_tol']
-    single_channelcft = settings['cc_threshold']
 
-    t0_tcft = mean_correlation_trace.stats.starttime
-    trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
+    trigger_shift = trigger_time - mean_correlation_trace.stats.starttime
     trigger_sample = round(trigger_shift / mean_correlation_trace.stats.delta)
-    max_sct = np.empty(len(correlation_stream))
-    max_trg = np.empty(len(correlation_stream))
-    max_ind = np.empty(len(correlation_stream))
-    chan_sct = {}
+    correlations = []
+    shifts = []
+    keys = []
+    for trace in stacked_stream:
+        lower = max(trigger_sample - sample_tolerance, 0)
+        upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
+        keys.append(trace.stats.network + "." + trace.stats.station + " " + trace.stats.channel)
+        correlations.append(max(trace.data[lower:upper]))
+        shifts.append(sample_tolerance - np.argmax(trace.data[lower:upper]))
 
-    for icft, tsc in enumerate(correlation_stream):
-        # get cft amplitude value at corresponding trigger and store it in
-        # check for possible 2 sample shift and eventually change trg['cft_peaks']
-        chan_sct[icft] = tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
-        tmp0 = max(trigger_sample - sample_tolerance, 0)
-        tmp1 = trigger_sample + sample_tolerance + 1
-        max_sct[icft] = max(tsc.data[tmp0:tmp1])
-        max_ind[icft] = np.argmax(tsc.data[tmp0:tmp1])
-        max_ind[icft] = sample_tolerance - max_ind[icft]
-        max_trg[icft] = tsc.data[trigger_sample: trigger_sample + 1]
-
-    nch = (max_sct > single_channelcft).sum()
-    nch03, nch05, nch07, nch09 = [(max_sct > threshold).sum() for threshold in (0.3, 0.5, 0.7, 0.9)]
-    cft_ave = np.mean(max_sct)
-    cft_ave_trg = np.mean(max_trg)
+    nch = sum(1 for corr in correlations if corr > correlation_threshold)
+    mean_correlation = np.mean(correlations)
     channels_list = []
-    for idchan in range(len(max_sct)):
-        record = (chan_sct[idchan], max_trg[idchan], max_sct[idchan], max_ind[idchan])
+    for idchan in range(len(correlations)):
+        record = (keys[idchan], correlations[idchan], shifts[idchan])
         channels_list.append(record)
-    return nch, (cft_ave, cft_ave_trg, nch03, nch05, nch07, nch09), channels_list
+    return nch, mean_correlation, channels_list
 
 
 def magnitude(continuous_stream, template_stream, trigger_time, mt):
