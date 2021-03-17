@@ -9,7 +9,7 @@ from obspy.core.event import read_events
 from yaml import load, FullLoader
 from tqdm import tqdm
 
-from pympa.core import read_travel_times, read_template_stream, range_days, read_continuous_stream, find_events
+from pympa.core import read_travel_times, read_template_stream, range_days, read_continuous_stream, correlation_detector
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
@@ -74,13 +74,13 @@ if __name__ == '__main__':
             channels = tuple(travel_times.keys())
             if len(channels) < settings['nch_min']:
                 logging.info(f"{day}, not enough channels in travel times for template {template_number}")
-                break
+                continue
             template_stream = read_template_stream(templates_dir_path,
                                                    template_number,
                                                    channels)
             if len(template_stream) < settings['nch_min']:
                 logging.info(f"{day}, not enough channels for template {template_number}")
-                break
+                continue
             mt = catalog[template_number].magnitudes[0].mag
             day_stream = read_continuous_stream(continuous_dir_path,
                                                 day,
@@ -89,13 +89,13 @@ if __name__ == '__main__':
                                                 freqmax=settings['highpassf'])
             if len(day_stream) < settings['nch_min']:
                 logging.info(f"{day}, not enough channels in continuous stream")
-                break
+                continue
             try:
-                new_events = find_events(template_stream,
-                                         day_stream,
-                                         travel_times,
-                                         mt,
-                                         settings)
+                new_events = correlation_detector(template_stream,
+                                                  day_stream,
+                                                  travel_times,
+                                                  mt,
+                                                  settings)
                 events_found[template_number] = new_events
             except Exception as err:
                 logging.warning(f"{err}")

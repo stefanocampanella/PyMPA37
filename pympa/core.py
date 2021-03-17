@@ -77,88 +77,71 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
     return trace
 
 
-def find_events(template_stream, continuous_stream, travel_times, mt, settings):
+def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude, settings):
     events_list = []
-    correlation_stream = compute_correlation_stream(template_stream, continuous_stream)
-    stall, ccmad = stack(correlation_stream, travel_times, settings)
-    tstda = abs(ccmad.data - np.median(ccmad.data)).mean()
-    threshold = settings['factor_thre'] * tstda
-    # Run coincidence trigger on a single CC trace resulting from the CFTs stack
+    correlation_stream = correlate_streams(template_stream, continuous_stream, std_range=settings['std_range'])
+    stacked_stream, mean_correlation_trace = stack(correlation_stream, travel_times)
+    mean_absolute_deviation = abs(mean_correlation_trace.data - np.median(mean_correlation_trace.data)).mean()
+    threshold = settings['factor_thre'] * mean_absolute_deviation
+    # Run coincidence trigger on a single CC trace resulting from the CFTs to_wavefront_time
     # essential threshold parameters Cross correlation thresholds
     triggers = coincidence_trigger(None,
                                    threshold,
                                    0.85 * threshold,
-                                   Stream(ccmad),
-                                   1.0)
+                                   Stream(mean_correlation_trace),
+                                   0.0)
+    reference_time = list(travel_times.values())[0]
     for trigger in triggers:
-        nch, stats, channel_list = csc(stall, ccmad, trigger, settings)
+        nch, stats, channel_list = csc(stacked_stream, mean_correlation_trace, trigger['time'], settings)
         if nch >= settings['nch_min']:
-            mdr = magnitude(continuous_stream, template_stream, trigger['time'], mt, settings)
-            tt = trigger["time"] + time_diff_min(stall, travel_times)
-            record = (tt, mdr, tstda, stats, channel_list)
+            event_magnitude = magnitude(continuous_stream, template_stream, trigger['time'], template_magnitude)
+            event_time = trigger['time'] + reference_time
+            record = (event_time, event_magnitude, mean_absolute_deviation, stats, channel_list)
             events_list.append(record)
     return events_list
 
 
-def time_diff_min(stall, travel_times):
-    time_diff = []
-    for tr in stall:
-        net = tr.stats.network
-        station = tr.stats.station
-        channel = tr.stats.channel
-        time_diff.append(travel_times[(net, station, channel)])
-    return min(time_diff)
-
-
-def compute_correlation_stream(template_stream, continuous_stream):
+def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5)):
     correlation_stream = Stream()
     for tt in template_stream:
-        tc, = continuous_stream.select(station=tt.stats.station, channel=tt.stats.channel)
+        network, station, channel = tt.stats.network, tt.stats.station, tt.stats.channel
+        tc, = continuous_stream.select(network=network, station=station, channel=channel)
         fct = correlate_template(tc.data, tt.data)
         fct = np.nan_to_num(fct)
         header = {"network": tc.stats.network,
                   "station": tc.stats.station,
                   "channel": tc.stats.channel,
                   "starttime": tc.stats.starttime,
-                  "npts": len(fct),
-                  "sampling_rate": tc.stats.sampling_rate,
-                  "mseed": {"dataquality": "D"}}
+                  "sampling_rate": tc.stats.sampling_rate}
         correlation_stream += Trace(data=fct, header=header)
+
+    std_trac = np.fromiter((np.std(abs(tr.data)) for tr in correlation_stream), dtype=float)
+    std_trac = std_trac / std_trac.mean()
+    for std, tr in zip(std_trac, correlation_stream):
+        if std < std_range[0] or std > std_range[1]:
+            correlation_stream.remove(tr)
+            logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
+
     return correlation_stream
 
 
-def stack(correlation_stream, travel_times, settings):
-    """
-    Function to stack traces in a stream with different trace.id and
-    different starttime but the same number of datapoints.
-    Returns a trace having as starttime
-    the earliest startime within the stream
-    """
-    stall = Stream()
-    for trace in correlation_stream:
+def stack(stream, travel_times):
+
+    stacked_stream = stream.copy()
+    for trace in stacked_stream:
         key = trace.stats.network, trace.stats.station, trace.stats.channel
-        tstart = trace.stats.starttime + travel_times[key]
-        tend = tstart + datetime.timedelta(days=1)
-        stall += trace.trim(starttime=tstart, endtime=tend, nearest_sample=True, pad=True, fill_value=0)
+        starttime = trace.stats.starttime + travel_times[key]
+        endtime = starttime + datetime.timedelta(days=1)
+        trace.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
 
-    std_trac = np.fromiter((np.std(abs(tr.data)) for tr in stall), dtype=float)
-    std_trac = std_trac / std_trac.mean()
-    for std, tr in zip(std_trac, stall):
-        if std <= settings['stddown'] or std >= settings['stdup']:
-            stall.remove(tr)
-            logging.debug(f"Removed Trace n Stream = {tr} {std}")
-    header = {"network": "STACK",
-              "station": "BH",
-              "channel": "XX",
-              "starttime": min(tr.stats.starttime for tr in stall),
-              "sampling_rate": stall[0].stats.sampling_rate,
-              "npts": stall[0].stats.npts}
-    ccmad = Trace(data=np.mean([tr.data for tr in stall], axis=0), header=header)
+    header = {"starttime": min(trace.stats.starttime for trace in stacked_stream),
+              "sampling_rate": stacked_stream[0].stats.sampling_rate}
+    mean_correlation = Trace(data=np.mean([trace.data for trace in stacked_stream], axis=0), header=header)
 
-    return stall, ccmad
+    return stacked_stream, mean_correlation
 
 
-def csc(stall, ccmad, trigger, settings):
+def csc(correlation_stream, mean_correlation_trace, trigger_time, settings):
     """
     The function check single channel cft compute the maximum CFT's
     values at each trigger time and counts the number of channels
@@ -170,16 +153,15 @@ def csc(stall, ccmad, trigger, settings):
     sample_tolerance = settings['sample_tol']
     single_channelcft = settings['cc_threshold']
 
-    trigger_time = trigger["time"]
-    t0_tcft = ccmad.stats.starttime
+    t0_tcft = mean_correlation_trace.stats.starttime
     trigger_shift = trigger_time.timestamp - t0_tcft.timestamp
-    trigger_sample = round(trigger_shift / ccmad.stats.delta)
-    max_sct = np.empty(len(stall))
-    max_trg = np.empty(len(stall))
-    max_ind = np.empty(len(stall))
+    trigger_sample = round(trigger_shift / mean_correlation_trace.stats.delta)
+    max_sct = np.empty(len(correlation_stream))
+    max_trg = np.empty(len(correlation_stream))
+    max_ind = np.empty(len(correlation_stream))
     chan_sct = {}
 
-    for icft, tsc in enumerate(stall):
+    for icft, tsc in enumerate(correlation_stream):
         # get cft amplitude value at corresponding trigger and store it in
         # check for possible 2 sample shift and eventually change trg['cft_peaks']
         chan_sct[icft] = tsc.stats.network + "." + tsc.stats.station + " " + tsc.stats.channel
@@ -201,7 +183,7 @@ def csc(stall, ccmad, trigger, settings):
     return nch, (cft_ave, cft_ave_trg, nch03, nch05, nch07, nch09), channels_list
 
 
-def magnitude(continuous_stream, template_stream, trigger_time, mt, settings):
+def magnitude(continuous_stream, template_stream, trigger_time, mt):
     reft = min(tr.stats.starttime for tr in template_stream)
     md = []
     for continuous_trace in continuous_stream:
@@ -210,7 +192,7 @@ def magnitude(continuous_stream, template_stream, trigger_time, mt, settings):
         if stream := template_stream.select(station=ss, channel=ich):
             template_trace, = stream
             timestart = trigger_time + (template_trace.stats.starttime - reft)
-            timend = timestart + settings['temp_length']
+            timend = timestart + (template_trace.stats.endtime - template_trace.stats.starttime)
             continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
             amaxd = max(abs(continuous_trace_view.data))
             amaxt = max(abs(template_trace.data))
