@@ -160,10 +160,7 @@ def correct_correlations(stacked_stream, mean_correlation_trace, trigger_time,
 
     num_channels = sum(1 for corr in correlations if corr > correlation_threshold)
     mean_correlation = np.mean(correlations)
-    channels_list = []
-    for idchan in range(len(correlations)):
-        record = (keys[idchan], correlations[idchan], shifts[idchan])
-        channels_list.append(record)
+    channels_list = list(zip(keys, correlations, shifts))
     return num_channels, mean_correlation, channels_list
 
 
