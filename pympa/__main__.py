@@ -104,7 +104,7 @@ if __name__ == '__main__':
         for template_number, events in events_found.items():
             for event in events:
                 time, magnitude, correlation, channels = event
-                output_file.write(f"{template_number}\t{time.strftime('%Y/%m/%d %H:%M:%S')}\t"
+                output_file.write(f"{time.strftime('%H:%M:%S %d/%m/%Y')}\t{template_number}\t"
                                   f"{magnitude}\t{correlation}\n")
                 for channel in channels:
                     name, correlation, shift = channel
