@@ -144,16 +144,17 @@ def stack(stream, travel_times):
 
 def correct_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
     correlations = []
-    samples = []
+    sample_shifts = []
     keys = []
     for trace in stacked_stream:
         lower = max(trigger_sample - sample_tolerance, 0)
         upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
         keys.append(trace.stats.network + "." + trace.stats.station + " " + trace.stats.channel)
-        samples.append(trace.data[lower:upper].argmax() - sample_tolerance)
-        correlations.append(trace.data[lower:upper].max())
+        sample_shift = trace.data[lower:upper].argmax() - sample_tolerance
+        sample_shifts.append(sample_shift)
+        correlations.append(trace.data[trigger_sample + sample_shift])
 
-    return list(zip(keys, correlations, samples))
+    return list(zip(keys, correlations, sample_shifts))
 
 
 def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude):
