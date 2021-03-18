@@ -148,10 +148,10 @@ def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
         lower = max(trigger_sample - sample_tolerance, 0)
         upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
         stats = trace.stats
-        id = stats.network + "." + stats.station + ".." + stats.channel
+        name = stats.network + "." + stats.station + ".." + stats.channel
         sample_shift = np.argmax(trace.data[lower:upper]) - sample_tolerance
         correlation = trace.data[trigger_sample + sample_shift]
-        channels.append((id, correlation, sample_shift))
+        channels.append((name, correlation, sample_shift))
 
     return channels
 

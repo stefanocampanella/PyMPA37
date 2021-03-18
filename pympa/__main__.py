@@ -101,10 +101,11 @@ if __name__ == '__main__':
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs to {output_path}")
     with open(output_path, "w") as output_file:
-        for template_number, events_list in events_found.items():
-            output_file.write(f"==== event list begin for template {template_number} ====\n")
-            for event in events_list:
-                output_file.write(" ".join(f"{x}" for x in event[:-1]) + "\n")
-                for channel in event[-1]:
-                    output_file.write(" ".join(f"{x}" for x in channel) + "\n")
-            output_file.write(f"==== event list end ====\n\n")
+        for template_number, events in events_found.items():
+            for event in events:
+                time, magnitude, correlation, channels = event
+                output_file.write(f"{template_number}\t{time.strftime('%Y/%m/%d %H:%M:%S')}\t"
+                                  f"{magnitude}\t{correlation}\n")
+                for channel in channels:
+                    name, correlation, shift = channel
+                    output_file.write(f"{name}\t{correlation}\t{shift}\n")
