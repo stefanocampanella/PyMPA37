@@ -84,23 +84,23 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
     mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
 
     delta = stacked_stream[0].stats.delta
-    peaks, _ = find_peaks(mean_correlation, distance=template_stream[0].stats.npts)
     starttime = min(trace.stats.starttime for trace in stacked_stream)
     reference_time = min(travel_times[(trace.stats.network,
                                        trace.stats.station,
                                        trace.stats.channel)]
                          for trace in correlation_stream)
+    peaks, _ = find_peaks(mean_correlation, distance=template_stream[0].stats.npts)
     for peak in peaks:
-        correlations = correct_correlations(stacked_stream,
-                                            peak,
-                                            sample_tolerance=settings['sample_tol'])
-        num_channels = sum(1 for _, corr, _ in correlations if corr > settings['cc_threshold'])
-        if  num_channels >= settings['nch_min']:
+        channels = fix_correlations(stacked_stream,
+                                    peak,
+                                    sample_tolerance=settings['sample_tol'])
+        num_channels = sum(1 for _, corr, _ in channels if corr > settings['cc_threshold'])
+        if num_channels >= settings['nch_min']:
             trigger_time = starttime + peak * delta
             event_magnitude = magnitude(continuous_stream, template_stream, trigger_time, template_magnitude)
             event_time = trigger_time + reference_time
-            corr = sum(corr for _, corr, _ in correlations) / len(correlations)
-            record = (event_time, event_magnitude, corr, correlations)
+            event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
+            record = (event_time, event_magnitude, event_correlation, channels)
             events_list.append(record)
     return events_list
 
@@ -142,7 +142,7 @@ def stack(stream, travel_times):
     return stacked_stream
 
 
-def correct_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
+def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
     correlations = []
     sample_shifts = []
     keys = []
