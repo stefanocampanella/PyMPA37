@@ -143,18 +143,17 @@ def stack(stream, travel_times):
 
 
 def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
-    correlations = []
-    sample_shifts = []
-    keys = []
+    channels = []
     for trace in stacked_stream:
         lower = max(trigger_sample - sample_tolerance, 0)
         upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
-        keys.append(trace.stats.network + "." + trace.stats.station + " " + trace.stats.channel)
-        sample_shift = trace.data[lower:upper].argmax() - sample_tolerance
-        sample_shifts.append(sample_shift)
-        correlations.append(trace.data[trigger_sample + sample_shift])
+        stats = trace.stats
+        id = stats.network + "." + stats.station + ".." + stats.channel
+        sample_shift = np.argmax(trace.data[lower:upper]) - sample_tolerance
+        correlation = trace.data[trigger_sample + sample_shift]
+        channels.append((id, correlation, sample_shift))
 
-    return list(zip(keys, correlations, sample_shifts))
+    return channels
 
 
 def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude):
@@ -173,5 +172,5 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
             channel_magnitudes.append(event_magnitude)
     channel_magnitudes = np.array(channel_magnitudes)
     absolute_deviations = np.abs(channel_magnitudes - np.median(channel_magnitudes))
-    valid_channel_magnitudes = channel_magnitudes[absolute_deviations <= 2 * np.median(absolute_deviations)]
+    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < 2 * np.median(absolute_deviations)]
     return valid_channel_magnitudes.mean()
