@@ -1,12 +1,12 @@
 import datetime
-from math import log10
+import logging
 from functools import lru_cache
+from math import log10
 
 import numpy as np
-import logging
 from obspy import read, Stream, Trace, UTCDateTime
 from obspy.signal.cross_correlation import correlate_template
-from obspy.signal.trigger import coincidence_trigger
+from scipy.signal import find_peaks
 
 
 def range_days(start, stop):
@@ -81,28 +81,26 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
     events_list = []
     correlation_stream = correlate_streams(template_stream, continuous_stream, std_range=settings['std_range'])
     stacked_stream = stack(correlation_stream, travel_times)
-    mean_correlation_header = {"starttime": min(trace.stats.starttime for trace in stacked_stream),
-                               "sampling_rate": stacked_stream[0].stats.sampling_rate}
-    mean_correlation_trace = Trace(data=np.mean([trace.data for trace in stacked_stream], axis=0),
-                                   header=mean_correlation_header)
-    mean_absolute_deviation = abs(mean_correlation_trace.data - np.median(mean_correlation_trace.data)).mean()
-    threshold = settings['factor_thre'] * mean_absolute_deviation
-    triggers = coincidence_trigger(None,
-                                   threshold,
-                                   0.0,
-                                   Stream(mean_correlation_trace),
-                                   0.0)
-    reference_time = list(travel_times.values())[0]
-    for trigger in triggers:
-        nch, mean_correlation, channel_list = correct_correlations(stacked_stream,
-                                                                   mean_correlation_trace,
-                                                                   trigger['time'],
-                                                                   settings['cc_threshold'],
-                                                                   sample_tolerance=settings['sample_tol'])
-        if nch >= settings['nch_min']:
-            event_magnitude = magnitude(continuous_stream, template_stream, trigger['time'], template_magnitude)
-            event_time = trigger['time'] + reference_time
-            record = (event_time, event_magnitude, mean_absolute_deviation, mean_correlation, channel_list)
+    mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
+
+    delta = stacked_stream[0].stats.delta
+    peaks, _ = find_peaks(mean_correlation, distance=template_stream[0].stats.npts)
+    starttime = min(trace.stats.starttime for trace in stacked_stream)
+    reference_time = min(travel_times[(trace.stats.network,
+                                       trace.stats.station,
+                                       trace.stats.channel)]
+                         for trace in correlation_stream)
+    for peak in peaks:
+        correlations = correct_correlations(stacked_stream,
+                                            peak,
+                                            sample_tolerance=settings['sample_tol'])
+        num_channels = sum(1 for _, corr, _ in correlations if corr > settings['cc_threshold'])
+        if  num_channels >= settings['nch_min']:
+            trigger_time = starttime + peak * delta
+            event_magnitude = magnitude(continuous_stream, template_stream, trigger_time, template_magnitude)
+            event_time = trigger_time + reference_time
+            corr = sum(corr for _, corr, _ in correlations) / len(correlations)
+            record = (event_time, event_magnitude, corr, correlations)
             events_list.append(record)
     return events_list
 
@@ -144,24 +142,18 @@ def stack(stream, travel_times):
     return stacked_stream
 
 
-def correct_correlations(stacked_stream, mean_correlation_trace, trigger_time,
-                         correlation_threshold, sample_tolerance=6):
-    trigger_shift = trigger_time - mean_correlation_trace.stats.starttime
-    trigger_sample = round(trigger_shift / mean_correlation_trace.stats.delta)
+def correct_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
     correlations = []
-    shifts = []
+    samples = []
     keys = []
     for trace in stacked_stream:
         lower = max(trigger_sample - sample_tolerance, 0)
         upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
         keys.append(trace.stats.network + "." + trace.stats.station + " " + trace.stats.channel)
-        correlations.append(max(trace.data[lower:upper]))
-        shifts.append(sample_tolerance - np.argmax(trace.data[lower:upper]))
+        samples.append(trace.data[lower:upper].argmax() - sample_tolerance)
+        correlations.append(trace.data[lower:upper].max())
 
-    num_channels = sum(1 for corr in correlations if corr > correlation_threshold)
-    mean_correlation = np.mean(correlations)
-    channels_list = list(zip(keys, correlations, shifts))
-    return num_channels, mean_correlation, channels_list
+    return list(zip(keys, correlations, samples))
 
 
 def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude):

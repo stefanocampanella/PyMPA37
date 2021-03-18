@@ -99,7 +99,7 @@ if __name__ == '__main__':
                 logging.warning(f"{err}")
 
     output_path = Path(cli_args.output_path)
-    logging.info(f"Writing outputs at {output_path}")
+    logging.info(f"Writing outputs to {output_path}")
     with open(output_path, "w") as output_file:
         for template_number, events_list in events_found.items():
             output_file.write(f"==== event list begin for template {template_number} ====\n")
