@@ -54,7 +54,6 @@ def read_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, 
             continuous_stream += read_continuous_trace(filepath, day, freqmin, freqmax)
         except Exception as err:
             logging.warning(f"{err}")
-
     return continuous_stream
 
 
@@ -127,7 +126,6 @@ def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5))
         if std < std_range[0] or std > std_range[1]:
             correlation_stream.remove(tr)
             logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
-
     return correlation_stream
 
 
@@ -138,7 +136,6 @@ def stack(stream, travel_times):
         starttime = trace.stats.starttime + travel_times[key]
         endtime = starttime + datetime.timedelta(days=1)
         trace.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
-
     return stacked_stream
 
 
@@ -152,7 +149,6 @@ def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
         sample_shift = np.argmax(trace.data[lower:upper]) - sample_tolerance
         correlation = trace.data[trigger_sample + sample_shift]
         channels.append((name, correlation, sample_shift))
-
     return channels
 
 
