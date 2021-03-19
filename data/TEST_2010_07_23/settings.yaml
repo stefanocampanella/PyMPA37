@@ -6,5 +6,6 @@ nch_min: 6
 date_range: [ 2010-07-23, 2010-07-24 ]
 template_range: [ 200, 204 ]
 factor_thre: 8
+factor_dist: 2
 std_range: [ 0.25, 1.5 ]
 chan_max: 12

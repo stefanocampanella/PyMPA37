@@ -4,7 +4,7 @@ from functools import lru_cache
 from math import log10
 
 import numpy as np
-from obspy import read, Stream, Trace, UTCDateTime
+from obspy import read, Stream, Trace, UTCDateTime, read_events
 from obspy.signal.cross_correlation import correlate_template
 from scipy.signal import find_peaks
 
@@ -16,8 +16,37 @@ def range_days(start, stop):
         date += datetime.timedelta(days=1)
 
 
-@lru_cache
-def read_travel_times(travel_times_path, chan_max=12):
+def read_templates(templates_dir_path, travel_times_dir_path, catalog_path, settings):
+    catalog = read_events(catalog_path)
+    start_template, end_template = settings['template_range']
+    templates = []
+    for template_number in range(start_template, end_template):
+        try:
+            travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes")
+            if len(travel_times) < settings['nch_min']:
+                logging.info(f"Not enough travel times for template {template_number}")
+                continue
+            elif len(travel_times) > settings['chan_max']:
+                channels_to_remove = [name for n, name in
+                                      enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
+                                      if n >= settings['chan_max']]
+                for channel in channels_to_remove:
+                    del travel_times[channel]
+            template_stream = read_template_stream(templates_dir_path,
+                                                   template_number,
+                                                   travel_times.keys())
+            if len(template_stream) < settings['nch_min']:
+                logging.info(f"Not enough channels for template {template_number}")
+                continue
+            template_magnitude = catalog[template_number].magnitudes[0].mag
+            templates.append((template_number, template_stream, travel_times, template_magnitude))
+        except Exception as err:
+            logging.warning(f"{err} occurred while processing template {template_number}")
+            continue
+    return templates
+
+
+def read_travel_times(travel_times_path):
     travel_times = {}
     with open(travel_times_path, "r") as file:
         while line := file.readline():
@@ -25,14 +54,9 @@ def read_travel_times(travel_times_path, chan_max=12):
             key = tuple(key.split('.'))
             value = float(value)
             travel_times[key] = value
-    keys = sorted(travel_times, key=lambda x: travel_times[x])
-    if len(keys) > chan_max:
-        keys = keys[:chan_max]
-    travel_times = {key: travel_times[key] for key in keys}
     return travel_times
 
 
-@lru_cache
 def read_template_stream(templates_dir_path, template_number, channel_list):
     template_stream = Stream()
     for net, sta, chn in channel_list:
@@ -81,14 +105,15 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
     correlation_stream = correlate_streams(template_stream, continuous_stream, std_range=settings['std_range'])
     stacked_stream = stack(correlation_stream, travel_times)
     mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
-
+    correlation_dmad = np.median(np.abs(mean_correlation - np.median(mean_correlation)))
     delta = stacked_stream[0].stats.delta
     starttime = min(trace.stats.starttime for trace in stacked_stream)
     reference_time = min(travel_times[(trace.stats.network,
                                        trace.stats.station,
                                        trace.stats.channel)]
                          for trace in correlation_stream)
-    peaks, _ = find_peaks(mean_correlation, distance=template_stream[0].stats.npts)
+    peaks, _ = find_peaks(mean_correlation, height=settings['factor_thre'] * correlation_dmad,
+                          distance=settings['factor_dist'] * template_stream[0].stats.npts)
     for peak in peaks:
         channels = fix_correlations(stacked_stream,
                                     peak,
@@ -152,14 +177,14 @@ def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
     return channels
 
 
-def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude):
-    reft = min(tr.stats.starttime for tr in template_stream)
+def magnitude(continuous_stream, template_stream, trigger_time, template_magnitude, mad_threshold=2):
+    reference_time = min(tr.stats.starttime for tr in template_stream)
     channel_magnitudes = []
     for continuous_trace in continuous_stream:
         if stream := template_stream.select(station=continuous_trace.stats.station,
                                             channel=continuous_trace.stats.channel):
             template_trace, = stream
-            timestart = trigger_time + (template_trace.stats.starttime - reft)
+            timestart = trigger_time + (template_trace.stats.starttime - reference_time)
             timend = timestart + (template_trace.stats.endtime - template_trace.stats.starttime)
             continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
             continuous_absolute_max = max(abs(continuous_trace_view.data))
@@ -168,5 +193,5 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
             channel_magnitudes.append(event_magnitude)
     channel_magnitudes = np.array(channel_magnitudes)
     absolute_deviations = np.abs(channel_magnitudes - np.median(channel_magnitudes))
-    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < 2 * np.median(absolute_deviations)]
+    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < mad_threshold * np.median(absolute_deviations)]
     return valid_channel_magnitudes.mean()

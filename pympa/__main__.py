@@ -4,11 +4,11 @@ import sys
 from pathlib import Path
 import importlib.resources as resources
 
-from obspy.core.event import read_events
 from yaml import load, FullLoader
 from tqdm import tqdm
+import pandas as pd
 
-from pympa.core import read_travel_times, read_template_stream, range_days, read_continuous_stream, correlation_detector
+from pympa.core import read_templates, range_days, read_continuous_stream, correlation_detector
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
@@ -59,30 +59,16 @@ if __name__ == '__main__':
     settings = default_settings.copy()
     settings.update(runtime_settings)
 
-    catalog = read_events(catalog_path)
+    templates = read_templates(templates_dir_path, travel_times_dir_path, catalog_path, settings)
 
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
-    start_template, end_template = settings['template_range']
     events_found = {}
     for day in tqdm(range_days(start_date, end_date), total=num_days):
-        for template_number in range(start_template, end_template):
-            travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes",
-                                             chan_max=settings['chan_max'])
-            channels = tuple(travel_times.keys())
-            if len(channels) < settings['nch_min']:
-                logging.info(f"{day}, not enough channels in travel times for template {template_number}")
-                continue
-            template_stream = read_template_stream(templates_dir_path,
-                                                   template_number,
-                                                   channels)
-            if len(template_stream) < settings['nch_min']:
-                logging.info(f"{day}, not enough channels for template {template_number}")
-                continue
-            template_magnitude = catalog[template_number].magnitudes[0].mag
+        for template_number, template_stream, travel_times, template_magnitude in templates:
             day_stream = read_continuous_stream(continuous_dir_path,
                                                 day,
-                                                channels,
+                                                tuple(travel_times.keys()),
                                                 freqmin=settings['lowpassf'],
                                                 freqmax=settings['highpassf'])
             if len(day_stream) < settings['nch_min']:
