@@ -63,7 +63,7 @@ if __name__ == '__main__':
 
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
-    events_found = {}
+    events_found = []
     for day in tqdm(range_days(start_date, end_date), total=num_days):
         for template_number, template_stream, travel_times, template_magnitude in templates:
             day_stream = read_continuous_stream(continuous_dir_path,
@@ -80,18 +80,12 @@ if __name__ == '__main__':
                                                   travel_times,
                                                   template_magnitude,
                                                   settings)
-                events_found[template_number] = new_events
+                events_found.extend((template_number,) + event for event in new_events)
             except Exception as err:
                 logging.warning(f"{err}")
-
+    events_dataframe = pd.DataFrame.from_records(events_found,
+                                                 columns=['template', 'date',
+                                                          'magnitude', 'correlation', 'channels'])
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs to {output_path}")
-    with open(output_path, "w") as output_file:
-        for template_number, events in events_found.items():
-            for event in events:
-                time, magnitude, correlation, channels = event
-                output_file.write(f"{time.strftime('%H:%M:%S %d/%m/%Y')}\t{template_number}\t"
-                                  f"{magnitude}\t{correlation}\n")
-                for channel in channels:
-                    name, correlation, shift = channel
-                    output_file.write(f"{name}\t{correlation}\t{shift}\n")
+    events_dataframe.to_csv(output_path)
