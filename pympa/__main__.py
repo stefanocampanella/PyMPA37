@@ -63,9 +63,9 @@ if __name__ == '__main__':
 
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
-    events_found = []
+    events = []
     for day in tqdm(range_days(start_date, end_date), total=num_days):
-        for template_number, template_stream, travel_times, template_magnitude in templates:
+        for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False):
             day_stream = read_continuous_stream(continuous_dir_path,
                                                 day,
                                                 tuple(travel_times.keys()),
@@ -75,17 +75,31 @@ if __name__ == '__main__':
                 logging.info(f"{day}, not enough channels in continuous stream")
                 continue
             try:
-                new_events = correlation_detector(template_stream,
+                detections = correlation_detector(template_stream,
                                                   day_stream,
                                                   travel_times,
                                                   template_magnitude,
                                                   settings)
-                events_found.extend((template_number,) + event for event in new_events)
+                for detection in detections:
+                    date, magnitude, correlation, stack_height, stack_dmad, channels = detection
+                    num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_threshold'])
+                    if num_channels >= settings['nch_min']:
+                        record = (template_number, date, magnitude, correlation,
+                                  stack_height, stack_dmad, num_channels)
+                        events.append(record)
             except Exception as err:
                 logging.warning(f"{err}")
-    events_dataframe = pd.DataFrame.from_records(events_found,
-                                                 columns=['template', 'date',
-                                                          'magnitude', 'correlation', 'channels'])
+    events_dataframe = pd.DataFrame.from_records(events,
+                                                 columns=['template', 'date', 'magnitude',
+                                                          'correlation', 'stack_height', 'stack_dmad',
+                                                          'num_channels'])
     output_path = Path(cli_args.output_path)
     logging.info(f"Writing outputs to {output_path}")
-    events_dataframe.to_csv(output_path)
+    events_dataframe['crt_pre'] = events_dataframe['stack_height'] / events_dataframe['stack_dmad']
+    events_dataframe['crt_post'] = events_dataframe['correlation'] / events_dataframe['stack_dmad']
+    events_dataframe.to_csv(output_path, index=False, float_format='%.3f',
+                            columns=['template', 'date', 'magnitude',
+                                     'correlation', 'crt_post',
+                                     'stack_height', 'crt_pre',
+                                     'num_channels'],
+                            header=False, sep=' ')
