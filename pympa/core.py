@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 from functools import lru_cache
 from math import log10
 
@@ -16,30 +17,29 @@ def range_days(start, stop):
         date += datetime.timedelta(days=1)
 
 
-def read_templates(templates_dir_path, travel_times_dir_path, catalog_path,
-                   template_range=None, num_channels_bounds=(0, np.inf)):
-    catalog = read_events(catalog_path)
-    start_template, end_template = template_range if template_range else (0, 100)
-    num_channels_min, num_channels_max = num_channels_bounds
+def range_templates(travel_times_dirpath, num_templates_bounds):
+    file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
+    num_template_min, num_template_max = num_templates_bounds
+    for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
+        match = re.match(file_regex, travel_times_filepath.name)
+        template_number = int(match['template_number'])
+        if num_template_min <= template_number < num_template_max:
+            yield template_number, travel_times_filepath
+
+
+def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_min,
+                   num_templates_bounds=None, num_tt_channels_bounds=None):
+    num_templates_bounds = num_templates_bounds if num_templates_bounds else (0, np.inf)
+    num_tt_channels_bounds = num_tt_channels_bounds if num_tt_channels_bounds else (0, np.inf)
+    catalog = read_events(catalog_filepath)
     templates = []
-    for template_number in range(start_template, end_template):
+    for template_number, travel_times_filepath in range_templates(travel_times_dirpath, num_templates_bounds):
         try:
-            travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes")
-            if len(travel_times) < num_channels_min:
-                logging.info(f"Not enough travel times for template {template_number}")
-                continue
-            elif len(travel_times) > num_channels_max:
-                channels_to_remove = [name
-                                      for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                                      if n >= num_channels_max]
-                for channel in channels_to_remove:
-                    del travel_times[channel]
-            template_stream = read_template_stream(templates_dir_path,
+            travel_times = read_travel_times(travel_times_filepath, num_tt_channels_bounds)
+            template_stream = read_template_stream(templates_dirpath,
                                                    template_number,
-                                                   travel_times.keys())
-            if len(template_stream) < num_channels_min:
-                logging.info(f"Not enough channels for template {template_number}")
-                continue
+                                                   travel_times.keys(),
+                                                   num_channels_min)
             template_magnitude = catalog[template_number].magnitudes[0].mag
             templates.append((template_number, template_stream, travel_times, template_magnitude))
         except Exception as err:
@@ -48,7 +48,8 @@ def read_templates(templates_dir_path, travel_times_dir_path, catalog_path,
     return templates
 
 
-def read_travel_times(travel_times_path):
+def read_travel_times(travel_times_path, num_channels_bounds):
+    num_channels_min, num_channels_max = num_channels_bounds
     travel_times = {}
     with open(travel_times_path, "r") as file:
         while line := file.readline():
@@ -56,10 +57,19 @@ def read_travel_times(travel_times_path):
             key = tuple(key.split('.'))
             value = float(value)
             travel_times[key] = value
+
+    if len(travel_times) < num_channels_min:
+        raise RuntimeError(f"Not enough travel times in {travel_times_path}")
+    elif len(travel_times) > num_channels_max:
+        channels_to_remove = [name
+                              for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
+                              if n >= num_channels_max]
+        for channel in channels_to_remove:
+            del travel_times[channel]
     return travel_times
 
 
-def read_template_stream(templates_dir_path, template_number, channel_list):
+def read_template_stream(templates_dir_path, template_number, channel_list, num_channels_min):
     template_stream = Stream()
     for net, sta, chn in channel_list:
         try:
@@ -69,10 +79,12 @@ def read_template_stream(templates_dir_path, template_number, channel_list):
                 template_stream += read(file, dtype="float32")
         except Exception as err:
             logging.warning(f"{err}")
+    if len(template_stream) < num_channels_min:
+        raise RuntimeError(f"Not enough channels for template {template_number}")
     return template_stream
 
 
-def read_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, freqmax=8.0):
+def read_continuous_stream(continuous_dir_path, day, channel_list, num_channels_min, freqmin=3.0, freqmax=8.0):
     continuous_stream = Stream()
     for _, st, ch in channel_list:
         try:
@@ -80,6 +92,8 @@ def read_continuous_stream(continuous_dir_path, day, channel_list, freqmin=3.0, 
             continuous_stream += read_continuous_trace(filepath, day, freqmin, freqmax)
         except Exception as err:
             logging.warning(f"{err}")
+    if len(continuous_stream) < num_channels_min:
+        raise RuntimeError(f"Number of channels for {day} trace")
     return continuous_stream
 
 
@@ -103,9 +117,9 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
-                         threshold_factor, tolerance, correlation_std_bounds=(0.25, 1.5)):
+                         threshold_factor, tolerance, correlations_std_bounds=(0.25, 1.5)):
     events_list = []
-    correlation_stream = correlate_streams(template_stream, continuous_stream, std_bounds=correlation_std_bounds)
+    correlation_stream = correlate_streams(template_stream, continuous_stream, std_bounds=correlations_std_bounds)
     stacked_stream = stack(correlation_stream, travel_times)
     mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = np.mean(np.abs(mean_correlation - np.median(mean_correlation)))
