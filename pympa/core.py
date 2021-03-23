@@ -16,26 +16,28 @@ def range_days(start, stop):
         date += datetime.timedelta(days=1)
 
 
-def read_templates(templates_dir_path, travel_times_dir_path, catalog_path, settings):
+def read_templates(templates_dir_path, travel_times_dir_path, catalog_path,
+                   template_range=None, num_channels_bounds=(0, np.inf)):
     catalog = read_events(catalog_path)
-    start_template, end_template = settings['template_range']
+    start_template, end_template = template_range if template_range else (0, 100)
+    num_channels_min, num_channels_max = num_channels_bounds
     templates = []
     for template_number in range(start_template, end_template):
         try:
             travel_times = read_travel_times(travel_times_dir_path / f"{template_number}.ttimes")
-            if len(travel_times) < settings['nch_min']:
+            if len(travel_times) < num_channels_min:
                 logging.info(f"Not enough travel times for template {template_number}")
                 continue
-            elif len(travel_times) > settings['chan_max']:
+            elif len(travel_times) > num_channels_max:
                 channels_to_remove = [name
                                       for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                                      if n >= settings['chan_max']]
+                                      if n >= num_channels_max]
                 for channel in channels_to_remove:
                     del travel_times[channel]
             template_stream = read_template_stream(templates_dir_path,
                                                    template_number,
                                                    travel_times.keys())
-            if len(template_stream) < settings['nch_min']:
+            if len(template_stream) < num_channels_min:
                 logging.info(f"Not enough channels for template {template_number}")
                 continue
             template_magnitude = catalog[template_number].magnitudes[0].mag
@@ -100,13 +102,14 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
     return trace
 
 
-def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude, settings):
+def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
+                         threshold_factor, tolerance, correlation_std_bounds=(0.25, 1.5)):
     events_list = []
-    correlation_stream = correlate_streams(template_stream, continuous_stream, std_range=settings['std_range'])
+    correlation_stream = correlate_streams(template_stream, continuous_stream, std_bounds=correlation_std_bounds)
     stacked_stream = stack(correlation_stream, travel_times)
     mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = np.mean(np.abs(mean_correlation - np.median(mean_correlation)))
-    threshold = settings['factor_thre'] * correlation_dmad
+    threshold = threshold_factor * correlation_dmad
     peaks, properties = find_peaks(mean_correlation, height=threshold)
     starttime = min(trace.stats.starttime for trace in stacked_stream)
     delta = stacked_stream[0].stats.delta
@@ -115,9 +118,9 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
                                        trace.stats.channel)]
                          for trace in correlation_stream)
     for peak, peak_height in zip(peaks, properties['peak_heights']):
-        channels = fix_correlations(stacked_stream,
-                                    peak,
-                                    sample_tolerance=settings['sample_tol'])
+        channels = fix_correlation(stacked_stream,
+                                   peak,
+                                   tolerance)
         trigger_time = starttime + peak * delta
         event_magnitude = magnitude(continuous_stream, template_stream, trigger_time, template_magnitude)
         event_date = trigger_time + reference_time
@@ -128,7 +131,7 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
     return events_list
 
 
-def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5)):
+def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)):
     correlation_stream = Stream()
     for template_trace in template_stream:
         network = template_trace.stats.network
@@ -147,7 +150,7 @@ def correlate_streams(template_stream, continuous_stream, std_range=(0.25, 1.5))
     stds = np.fromiter((np.std(np.abs(trace.data)) for trace in correlation_stream), dtype=float)
     relative_stds = stds / stds.mean()
     for std, tr in zip(relative_stds, correlation_stream):
-        if std < std_range[0] or std > std_range[1]:
+        if std < std_bounds[0] or std > std_bounds[1]:
             correlation_stream.remove(tr)
             logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
     return correlation_stream
@@ -163,14 +166,14 @@ def stack(stream, travel_times):
     return stacked_stream
 
 
-def fix_correlations(stacked_stream, trigger_sample, sample_tolerance=6):
+def fix_correlation(stacked_stream, trigger_sample, tolerance):
     channels = []
     for trace in stacked_stream:
-        lower = max(trigger_sample - sample_tolerance, 0)
-        upper = min(trigger_sample + sample_tolerance + 1, len(trace.data))
+        lower = max(trigger_sample - tolerance, 0)
+        upper = min(trigger_sample + tolerance + 1, len(trace.data))
         stats = trace.stats
         name = stats.network + "." + stats.station + ".." + stats.channel
-        sample_shift = np.argmax(trace.data[lower:upper]) - sample_tolerance
+        sample_shift = np.argmax(trace.data[lower:upper]) - tolerance
         correlation = trace.data[trigger_sample + sample_shift]
         channels.append((name, correlation, sample_shift))
     return channels

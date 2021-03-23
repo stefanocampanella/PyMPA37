@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 import importlib.resources as resources
@@ -54,18 +55,23 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"{settings_path} is not a file")
     logging.info(f"Settings file located at {settings_path}")
 
+    is_interactive = os.isatty(sys.stdout.fileno())
+
     with open(settings_path) as settings_file:
         runtime_settings = load(settings_file, FullLoader)
     settings = default_settings.copy()
     settings.update(runtime_settings)
 
-    templates = read_templates(templates_dir_path, travel_times_dir_path, catalog_path, settings)
+    templates = read_templates(templates_dir_path, travel_times_dir_path, catalog_path,
+                               template_range=settings['template_range'],
+                               num_channels_bounds=settings['num_channels_bounds'])
 
     start_date, end_date = settings['date_range']
     num_days = (end_date - start_date).days
     events = []
-    for day in tqdm(range_days(start_date, end_date), total=num_days):
-        for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False):
+    for day in tqdm(range_days(start_date, end_date), total=num_days, disable=not is_interactive):
+        for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False,
+                                                                                       disable=not is_interactive):
             day_stream = read_continuous_stream(continuous_dir_path,
                                                 day,
                                                 tuple(travel_times.keys()),
@@ -79,11 +85,13 @@ if __name__ == '__main__':
                                                   day_stream,
                                                   travel_times,
                                                   template_magnitude,
-                                                  settings)
+                                                  settings['factor_thre'],
+                                                  settings['sample_tol'],
+                                                  correlation_std_bounds=settings['std_bounds'])
                 for detection in detections:
                     date, magnitude, correlation, stack_height, stack_dmad, channels = detection
-                    num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_threshold'])
-                    if num_channels >= settings['nch_min']:
+                    num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_filter']['threshold'])
+                    if num_channels >= settings['cc_filter']['num_channels']:
                         record = (template_number, date, magnitude, correlation,
                                   stack_height, stack_dmad, num_channels)
                         events.append(record)
