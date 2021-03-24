@@ -118,15 +118,15 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
 def correlate_template(data, template):
     template = template - bn.nanmean(template)
     lent = len(template)
-    cc = correlate(data, template, mode='valid', method='auto')
-    pad = len(cc) - len(data) + lent
+    cross_correlation = correlate(data, template, mode='valid', method='auto')
+    pad = len(cross_correlation) - len(data) + lent
     pad1, pad2 = (pad + 1) // 2, pad // 2
     data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
     norm = np.sqrt(lent * bn.move_var(data, lent)[lent:] * bn.ss(template))
     mask = norm > np.finfo(float).eps
-    np.divide(cc, norm, where=mask, out=cc)
-    cc[~mask] = 0
-    return cc
+    np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
+    cross_correlation[~mask] = 0
+    return cross_correlation
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
