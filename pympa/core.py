@@ -116,27 +116,17 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
 
 
 def correlate_template(data, template):
-    data = data.data
-    template = template.data
+    template = template - bn.nanmean(template)
     lent = len(template)
-    template = template - np.mean(template)
     cc = correlate(data, template, mode='valid', method='auto')
     pad = len(cc) - len(data) + lent
     pad1, pad2 = (pad + 1) // 2, pad // 2
     data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
-    # ws = window_sum(data, lent)
-    # norm = (window_sum(data * data, lent) - ws * ws / lent) * np.sum(template * template)
-    # norm[norm < 0] = 0
-    # np.sqrt(norm, out=norm)
     norm = np.sqrt(lent * bn.move_var(data, lent)[lent:] * bn.ss(template))
-    mask = norm <= np.finfo(float).eps
-    cc[mask] = 0
-    cc[~mask] /= norm[~mask]
+    mask = norm > np.finfo(float).eps
+    np.divide(cc, norm, where=mask, out=cc)
+    cc[~mask] = 0
     return cc
-
-
-def window_sum(data, window_len):
-    return bn.move_sum(data, window_len)[window_len:]
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
@@ -175,7 +165,7 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
         station = template_trace.stats.station
         channel = template_trace.stats.channel
         continuous_trace, = continuous_stream.select(network=network, station=station, channel=channel)
-        correlation = correlate_template(continuous_trace, template_trace)
+        correlation = correlate_template(continuous_trace.data, template_trace.data)
         header = {"network": continuous_trace.stats.network,
                   "station": continuous_trace.stats.station,
                   "channel": continuous_trace.stats.channel,
