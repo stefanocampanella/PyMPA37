@@ -13,3 +13,4 @@ dependencies:
   - numba
   - obspy
   - jupyterlab
+  - bottleneck

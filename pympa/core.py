@@ -7,7 +7,7 @@ from math import log10
 import numpy as np
 from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks, correlate
-from bottleneck import move_sum
+import bottleneck as bn
 
 
 def range_days(start, stop):
@@ -124,10 +124,11 @@ def correlate_template(data, template):
     pad = len(cc) - len(data) + lent
     pad1, pad2 = (pad + 1) // 2, pad // 2
     data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
-    ws = window_sum(data, lent)
-    norm = (window_sum(data * data, lent) - ws * ws / lent) * np.sum(template * template)
-    norm[norm < 0] = 0
-    np.sqrt(norm, out=norm)
+    # ws = window_sum(data, lent)
+    # norm = (window_sum(data * data, lent) - ws * ws / lent) * np.sum(template * template)
+    # norm[norm < 0] = 0
+    # np.sqrt(norm, out=norm)
+    norm = np.sqrt(lent * bn.move_var(data, lent)[lent:] * bn.ss(template))
     mask = norm <= np.finfo(float).eps
     cc[mask] = 0
     cc[~mask] /= norm[~mask]
@@ -135,7 +136,7 @@ def correlate_template(data, template):
 
 
 def window_sum(data, window_len):
-    return move_sum(data, window_len)[window_len:]
+    return bn.move_sum(data, window_len)[window_len:]
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
@@ -143,8 +144,8 @@ def correlation_detector(template_stream, continuous_stream, travel_times, templ
     events_list = []
     correlation_stream = correlate_streams(template_stream, continuous_stream, std_bounds=correlations_std_bounds)
     stacked_stream = stack(correlation_stream, travel_times)
-    mean_correlation = np.mean([trace.data for trace in stacked_stream], axis=0)
-    correlation_dmad = np.mean(np.abs(mean_correlation - np.median(mean_correlation)))
+    mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
+    correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
     peaks, properties = find_peaks(mean_correlation, height=threshold)
     starttime = min(trace.stats.starttime for trace in stacked_stream)
@@ -182,8 +183,8 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
                   "sampling_rate": continuous_trace.stats.sampling_rate}
         correlation_stream += Trace(data=correlation, header=header)
 
-    stds = np.fromiter((np.std(np.abs(trace.data)) for trace in correlation_stream), dtype=float)
-    relative_stds = stds / stds.mean()
+    stds = np.fromiter((bn.nanstd(np.abs(trace.data)) for trace in correlation_stream), dtype=float)
+    relative_stds = stds / bn.nanmean(stds)
     for std, tr in zip(relative_stds, correlation_stream):
         if std < std_bounds[0] or std > std_bounds[1]:
             correlation_stream.remove(tr)
@@ -208,7 +209,7 @@ def fix_correlation(stacked_stream, trigger_sample, tolerance):
         upper = min(trigger_sample + tolerance + 1, len(trace.data))
         stats = trace.stats
         name = stats.network + "." + stats.station + ".." + stats.channel
-        sample_shift = np.argmax(trace.data[lower:upper]) - tolerance
+        sample_shift = bn.nanargmax(trace.data[lower:upper]) - tolerance
         correlation = trace.data[trigger_sample + sample_shift]
         channels.append((name, correlation, sample_shift))
     return channels
@@ -224,11 +225,11 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
             timestart = trigger_time + (template_trace.stats.starttime - reference_time)
             timend = timestart + (template_trace.stats.endtime - template_trace.stats.starttime)
             continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
-            continuous_absolute_max = np.max(np.abs(continuous_trace_view.data))
-            template_absolute_max = np.max(np.abs(template_trace.data))
+            continuous_absolute_max = bn.nanmax(np.abs(continuous_trace_view.data))
+            template_absolute_max = bn.nanmax(np.abs(template_trace.data))
             event_magnitude = template_magnitude - log10(template_absolute_max / continuous_absolute_max)
             channel_magnitudes.append(event_magnitude)
     channel_magnitudes = np.array(channel_magnitudes)
-    absolute_deviations = np.abs(channel_magnitudes - np.median(channel_magnitudes))
-    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < mad_threshold * np.median(absolute_deviations)]
-    return valid_channel_magnitudes.mean()
+    absolute_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
+    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < mad_threshold * bn.median(absolute_deviations)]
+    return bn.nanmean(valid_channel_magnitudes)
