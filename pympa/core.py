@@ -7,6 +7,7 @@ from math import log10
 import numpy as np
 from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks, correlate
+from bottleneck import move_sum
 
 
 def range_days(start, stop):
@@ -124,10 +125,8 @@ def correlate_template(data, template):
     pad1, pad2 = (pad + 1) // 2, pad // 2
     data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
     ws = window_sum(data, lent)
-    norm = ws * ws / lent
-    np.subtract(window_sum(data * data, lent), norm, out=norm)
-    norm *= np.sum(template * template)
-    norm[norm <= 0] = 0
+    norm = (window_sum(data * data, lent) - ws * ws / lent) * np.sum(template * template)
+    norm[norm < 0] = 0
     np.sqrt(norm, out=norm)
     mask = norm <= np.finfo(float).eps
     cc[mask] = 0
@@ -136,12 +135,7 @@ def correlate_template(data, template):
 
 
 def window_sum(data, window_len):
-    """Rolling sum of data."""
-    ws = np.cumsum(data)
-    ws = ws[window_len:] - ws[:-window_len]
-    return ws
-    # np.subtract(ws[window_len:], ws[:-window_len], out=ws[:-window_len])
-    # return ws[:-window_len]
+    return move_sum(data, window_len)[window_len:]
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
