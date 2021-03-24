@@ -6,8 +6,7 @@ from math import log10
 
 import numpy as np
 from obspy import read, Stream, Trace, UTCDateTime, read_events
-from obspy.signal.cross_correlation import correlate_template
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, correlate
 
 
 def range_days(start, stop):
@@ -103,17 +102,46 @@ def read_continuous_trace(filepath, day, freqmin, freqmax):
         stream = read(file, dtype="float32")
         stream.merge(method=1, fill_value=0)
         trace, = stream
-        trace.detrend("constant")
         begin = UTCDateTime(day)
-        trace.trim(starttime=begin,
-                   endtime=begin + datetime.timedelta(days=1),
-                   pad=True,
-                   fill_value=0)
         trace.filter("bandpass",
                      freqmin=freqmin,
                      freqmax=freqmax,
                      zerophase=True)
+        trace.trim(starttime=begin,
+                   endtime=begin + datetime.timedelta(days=1),
+                   pad=True,
+                   fill_value=0)
     return trace
+
+
+def correlate_template(data, template):
+    data = data.data
+    template = template.data
+    lent = len(template)
+    template = template - np.mean(template)
+    cc = correlate(data, template, mode='valid', method='auto')
+    pad = len(cc) - len(data) + lent
+    pad1, pad2 = (pad + 1) // 2, pad // 2
+    data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
+    ws = window_sum(data, lent)
+    norm = ws * ws / lent
+    np.subtract(window_sum(data * data, lent), norm, out=norm)
+    norm *= np.sum(template * template)
+    norm[norm <= 0] = 0
+    np.sqrt(norm, out=norm)
+    mask = norm <= np.finfo(float).eps
+    cc[mask] = 0
+    cc[~mask] /= norm[~mask]
+    return cc
+
+
+def window_sum(data, window_len):
+    """Rolling sum of data."""
+    ws = np.cumsum(data)
+    ws = ws[window_len:] - ws[:-window_len]
+    return ws
+    # np.subtract(ws[window_len:], ws[:-window_len], out=ws[:-window_len])
+    # return ws[:-window_len]
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
@@ -152,8 +180,7 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
         station = template_trace.stats.station
         channel = template_trace.stats.channel
         continuous_trace, = continuous_stream.select(network=network, station=station, channel=channel)
-        correlation = correlate_template(continuous_trace.data, template_trace.data)
-        correlation = np.nan_to_num(correlation)
+        correlation = correlate_template(continuous_trace, template_trace)
         header = {"network": continuous_trace.stats.network,
                   "station": continuous_trace.stats.station,
                   "channel": continuous_trace.stats.channel,

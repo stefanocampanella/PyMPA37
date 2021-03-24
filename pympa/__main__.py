@@ -22,7 +22,7 @@ cli_args = parser.parse_args()
 
 logging.basicConfig(stream=sys.stderr,
                     format='%(levelname)s: %(message)s',
-                    level=logging.WARNING)
+                    level=logging.ERROR)
 
 if __name__ == '__main__':
 
