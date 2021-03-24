@@ -5,9 +5,9 @@ from functools import lru_cache
 from math import log10
 
 import numpy as np
+import bottleneck as bn
 from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks, correlate
-import bottleneck as bn
 
 
 def range_days(start, stop):
