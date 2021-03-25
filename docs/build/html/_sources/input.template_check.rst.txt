@@ -1,2 +1,0 @@
-Template Kurtosis-based Waveform Check
---------------------------------------
