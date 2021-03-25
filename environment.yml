@@ -13,3 +13,4 @@ dependencies:
   - obspy
   - bottleneck
   - jupyterlab
+  - tqdm
