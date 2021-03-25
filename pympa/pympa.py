@@ -1,20 +1,12 @@
 import datetime
 import logging
 import re
-from functools import lru_cache
 from math import log10
 
 import numpy as np
 import bottleneck as bn
 from obspy import read, Stream, Trace, UTCDateTime, read_events
-from scipy.signal import find_peaks, correlate
-
-
-def range_days(start, stop):
-    date = start
-    while date < stop:
-        yield date
-        date += datetime.timedelta(days=1)
+from scipy.signal import find_peaks
 
 
 def range_templates(travel_times_dirpath, num_templates_bounds):
@@ -84,49 +76,34 @@ def read_template_stream(templates_dir_path, template_number, channel_list, num_
     return template_stream
 
 
-def read_continuous_stream(continuous_dir_path, day, channel_list, num_channels_min, freqmin=3.0, freqmax=8.0):
+def range_days(start, stop):
+    date = start
+    while date < stop:
+        yield date
+        date += datetime.timedelta(days=1)
+
+
+def read_continuous_stream(continuous_dir_path, day, num_channels_min, freqmin=3.0, freqmax=8.0):
     continuous_stream = Stream()
-    for _, st, ch in channel_list:
+    for filepath in continuous_dir_path.glob(f"{day.strftime('%y%m%d')}*"):
         try:
-            filepath = continuous_dir_path / f"{day.strftime('%y%m%d')}.{st}.{ch}"
-            continuous_stream += read_continuous_trace(filepath, day, freqmin, freqmax)
+            with filepath.open('rb') as file:
+                trace, = read(file, dtype="float32")
+                trace.filter("bandpass",
+                             freqmin=freqmin,
+                             freqmax=freqmax,
+                             zerophase=True)
+                begin = UTCDateTime(day)
+                trace.trim(starttime=begin,
+                           endtime=begin + datetime.timedelta(days=1),
+                           pad=True,
+                           fill_value=0)
+                continuous_stream += trace
         except Exception as err:
             logging.warning(f"{err}")
     if len(continuous_stream) < num_channels_min:
         raise RuntimeError(f"Number of channels for {day} trace")
     return continuous_stream
-
-
-@lru_cache
-def read_continuous_trace(filepath, day, freqmin, freqmax):
-    with filepath.open('rb') as file:
-        stream = read(file, dtype="float32")
-        stream.merge(method=1, fill_value=0)
-        trace, = stream
-        begin = UTCDateTime(day)
-        trace.filter("bandpass",
-                     freqmin=freqmin,
-                     freqmax=freqmax,
-                     zerophase=True)
-        trace.trim(starttime=begin,
-                   endtime=begin + datetime.timedelta(days=1),
-                   pad=True,
-                   fill_value=0)
-    return trace
-
-
-def correlate_template(data, template):
-    template = template - bn.nanmean(template)
-    template_length = len(template)
-    cross_correlation = correlate(data, template, mode='valid', method='direct')
-    pad = len(cross_correlation) - (len(data) - template_length)
-    pad1, pad2 = (pad + 1) // 2, pad // 2
-    data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
-    norm = np.sqrt(template_length * bn.move_var(data, template_length)[template_length:] * bn.ss(template))
-    mask = norm > np.finfo(float).eps
-    np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
-    cross_correlation[~mask] = 0
-    return cross_correlation
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
@@ -180,6 +157,20 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
             correlation_stream.remove(tr)
             logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
     return correlation_stream
+
+
+def correlate_template(data, template):
+    template = template - bn.nanmean(template)
+    template_length = len(template)
+    cross_correlation = np.correlate(data, template, mode='valid')
+    pad = len(cross_correlation) - (len(data) - template_length)
+    pad1, pad2 = (pad + 1) // 2, pad // 2
+    data = np.hstack([np.zeros(pad1), data, np.zeros(pad2)])
+    norm = np.sqrt(template_length * bn.move_var(data, template_length)[template_length:] * bn.ss(template))
+    mask = norm > np.finfo(np.float32).eps
+    np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
+    cross_correlation[~mask] = 0
+    return cross_correlation
 
 
 def stack(stream, travel_times):

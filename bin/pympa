@@ -8,9 +8,8 @@ from pathlib import Path
 from yaml import load, FullLoader
 from tqdm import tqdm
 import pandas as pd
-from dask.distributed import Client
 
-from pympa.core import read_templates, range_days, read_continuous_stream, correlation_detector
+from pympa.pympa import read_templates, range_days, read_continuous_stream, correlation_detector
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
@@ -20,7 +19,6 @@ parser.add_argument("catalog_path", help="Path to event catalog")
 parser.add_argument("continuous_dir_path", help="Path to continuous traces directory")
 parser.add_argument("settings_path", help="Path to settings file")
 parser.add_argument("output_path", help="Output file path")
-parser.add_argument("scheduler_address", help="Dask scheduler address")
 cli_args = parser.parse_args()
 
 logging.basicConfig(stream=sys.stderr,
@@ -68,31 +66,28 @@ if __name__ == '__main__':
     num_days = (end_date - start_date).days
     events = []
     for day in tqdm(range_days(start_date, end_date), total=num_days, disable=not is_interactive):
+        day_stream = read_continuous_stream(continuous_dir_path,
+                                            day,
+                                            settings['continuous']['num_channels_min'],
+                                            freqmin=settings['continuous']['lowpass_freq'],
+                                            freqmax=settings['continuous']['highpass_freq'])
         for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False,
                                                                                        disable=not is_interactive):
-            try:
-                day_stream = read_continuous_stream(continuous_dir_path,
-                                                    day,
-                                                    tuple(travel_times.keys()),
-                                                    settings['continuous']['num_channels_min'],
-                                                    freqmin=settings['continuous']['lowpass_freq'],
-                                                    freqmax=settings['continuous']['highpass_freq'])
-                detections = correlation_detector(template_stream,
-                                                  day_stream,
-                                                  travel_times,
-                                                  template_magnitude,
-                                                  settings['detector']['threshold_factor'],
-                                                  settings['detector']['samples_tolerance'],
-                                                  correlations_std_bounds=settings['detector']['correlations_std_bounds'])
-                for detection in detections:
-                    date, magnitude, correlation, stack_height, stack_dmad, channels = detection
-                    num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_filter']['threshold'])
-                    if num_channels >= settings['cc_filter']['num_channels']:
-                        record = (template_number, date.datetime, magnitude, correlation,
-                                  stack_height, stack_dmad, num_channels)
-                        events.append(record)
-            except Exception as err:
-                logging.warning(f"{err}")
+
+            detections = correlation_detector(template_stream,
+                                              day_stream,
+                                              travel_times,
+                                              template_magnitude,
+                                              settings['detector']['threshold_factor'],
+                                              settings['detector']['samples_tolerance'],
+                                              correlations_std_bounds=settings['detector']['correlations_std_bounds'])
+            for detection in detections:
+                date, magnitude, correlation, stack_height, stack_dmad, channels = detection
+                num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_filter']['threshold'])
+                if num_channels >= settings['cc_filter']['num_channels']:
+                    record = (template_number, date.datetime, magnitude, correlation,
+                              stack_height, stack_dmad, num_channels)
+                    events.append(record)
     events_dataframe = pd.DataFrame.from_records(events,
                                                  columns=['template', 'date', 'magnitude',
                                                           'correlation', 'stack_height', 'stack_dmad',
