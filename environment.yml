@@ -10,7 +10,6 @@ dependencies:
   - matplotlib
   - dask
   - distributed
-  - numba
   - obspy
-  - jupyterlab
   - bottleneck
+  - jupyterlab
