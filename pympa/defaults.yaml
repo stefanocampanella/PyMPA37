@@ -1,8 +1,0 @@
-lowpassf: 3.0
-highpassf: 8.0
-sample_tol: 6
-cc_threshold: 0.35
-nch_min: 6
-factor_thre: 8
-std_range: [ 0.25, 1.5 ]
-chan_max: 12

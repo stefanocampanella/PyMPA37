@@ -1,10 +1,10 @@
 travel_times:
   num_channels_bounds: [ 6, 12 ]
 templates:
-  range: [ 200, 204 ]
+  range: null
   num_channels_min: 6
 continuous:
-  date_range: [ 2010-07-23, 2010-07-24 ]
+  date_range: [ 2010-07-20, 2010-07-24 ]
   lowpass_freq: 3.0
   highpass_freq: 8.0
   num_channels_min: 6
