@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from datetime import datetime
 
 from yaml import load, FullLoader
 from tqdm import tqdm
@@ -13,11 +14,12 @@ from pympa.pympa import read_templates, range_days, read_continuous_stream, corr
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
-parser.add_argument("travel_times_dir_path", help="Path to travel times directory")
-parser.add_argument("templates_dir_path", help="Path to templates directory")
-parser.add_argument("catalog_path", help="Path to event catalog")
-parser.add_argument("continuous_dir_path", help="Path to continuous traces directory")
-parser.add_argument("settings_path", help="Path to settings file")
+parser.add_argument("travel_times_dir_path", help="Path to travel times directory", type=Path)
+parser.add_argument("templates_dir_path", help="Path to templates directory", type=Path)
+parser.add_argument("catalog_path", help="Path to event catalog", type=Path)
+parser.add_argument("continuous_dir_path", help="Path to continuous traces directory", type=Path)
+parser.add_argument("begin_date", help="Datetime begin", type=datetime.fromisoformat)
+parser.add_argument("end_date", help="Datetime end", type=datetime.fromisoformat)
 parser.add_argument("output_path", help="Output file path")
 cli_args = parser.parse_args()
 
@@ -26,47 +28,21 @@ logging.basicConfig(stream=sys.stderr,
                     level=logging.ERROR)
 
 if __name__ == '__main__':
-
-    templates_dir_path = Path(cli_args.templates_dir_path).resolve()
-    if not templates_dir_path.is_dir():
-        raise FileNotFoundError(f"{templates_dir_path} is not a directory")
-    logging.info(f"Reading templates from {templates_dir_path}")
-
-    travel_times_dir_path = Path(cli_args.travel_times_dir_path).resolve()
-    if not travel_times_dir_path.is_dir():
-        raise FileNotFoundError(f"{travel_times_dir_path} is not a directory")
-    logging.info(f"Reading travel times from {travel_times_dir_path}")
-
-    continuous_dir_path = Path(cli_args.continuous_dir_path).resolve()
-    if not continuous_dir_path.is_dir():
-        raise FileNotFoundError(f"{continuous_dir_path} is not a directory")
-    logging.info(f"Reading continuous traces from {continuous_dir_path}")
-
-    catalog_path = Path(cli_args.catalog_path).resolve()
-    if not catalog_path.is_file():
-        raise FileNotFoundError(f"{catalog_path} is not a file")
-    logging.info(f"Catalog file located at {catalog_path}")
-
-    settings_path = Path(cli_args.settings_path).resolve()
-    if not settings_path.is_file():
-        raise FileNotFoundError(f"{settings_path} is not a file")
-    logging.info(f"Settings file located at {settings_path}")
-
     is_interactive = os.isatty(sys.stdout.fileno())
 
-    with open(settings_path) as settings_file:
+    with open("settings.yaml") as settings_file:
         settings = load(settings_file, FullLoader)
 
-    templates = read_templates(templates_dir_path, travel_times_dir_path, catalog_path,
+    templates = read_templates(cli_args.templates_dir_path, cli_args.travel_times_dir_path, cli_args.catalog_path,
                                settings['templates']['num_channels_min'],
                                num_templates_bounds=settings['templates']['range'],
                                num_tt_channels_bounds=settings['travel_times']['num_channels_bounds'])
 
-    start_date, end_date = settings['continuous']['date_range']
-    num_days = (end_date - start_date).days
     events = []
-    for day in tqdm(range_days(start_date, end_date), total=num_days, disable=not is_interactive):
-        day_stream = read_continuous_stream(continuous_dir_path,
+    for day in tqdm(range_days(cli_args.begin_date, cli_args.end_date),
+                    total=(cli_args.end_date - cli_args.begin_date).days,
+                    disable=not is_interactive):
+        day_stream = read_continuous_stream(cli_args.continuous_dir_path,
                                             day,
                                             settings['continuous']['num_channels_min'],
                                             freqmin=settings['continuous']['lowpass_freq'],
