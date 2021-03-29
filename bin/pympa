@@ -14,7 +14,7 @@ from pympa.pympa import read_templates, range_days, read_continuous_stream, corr
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
-parser.add_argument("root", help="Working directory", type=Path, nargs='?', default='.')
+parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
 parser.add_argument("begin", help="Datetime begin", type=datetime.fromisoformat)
 parser.add_argument("end", help="Datetime end", type=datetime.fromisoformat)
 parser.add_argument("output", help="Output file path")
