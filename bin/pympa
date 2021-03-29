@@ -14,13 +14,18 @@ from pympa.pympa import read_templates, range_days, read_continuous_stream, corr
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
-parser.add_argument("travel_times_dir_path", help="Path to travel times directory", type=Path)
-parser.add_argument("templates_dir_path", help="Path to templates directory", type=Path)
-parser.add_argument("catalog_path", help="Path to event catalog", type=Path)
-parser.add_argument("continuous_dir_path", help="Path to continuous traces directory", type=Path)
-parser.add_argument("begin_date", help="Datetime begin", type=datetime.fromisoformat)
-parser.add_argument("end_date", help="Datetime end", type=datetime.fromisoformat)
-parser.add_argument("output_path", help="Output file path")
+parser.add_argument("root", help="Working directory", type=Path, nargs='?', default='.')
+parser.add_argument("begin", help="Datetime begin", type=datetime.fromisoformat)
+parser.add_argument("end", help="Datetime end", type=datetime.fromisoformat)
+parser.add_argument("output", help="Output file path")
+parser.add_argument("--min_channels", help="Minimum number of channels", type=int, default=6)
+parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=15)
+parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
+parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
+parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='travel_times')
+parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
+parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
+parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
 cli_args = parser.parse_args()
 
 logging.basicConfig(stream=sys.stderr,
@@ -33,20 +38,22 @@ if __name__ == '__main__':
     with open("settings.yaml") as settings_file:
         settings = load(settings_file, FullLoader)
 
-    templates = read_templates(cli_args.templates_dir_path, cli_args.travel_times_dir_path, cli_args.catalog_path,
-                               settings['templates']['num_channels_min'],
+    templates = read_templates(cli_args.root / cli_args.templates,
+                               cli_args.root / cli_args.travel_times,
+                               cli_args.root / cli_args.catalog,
+                               cli_args.min_channels,
                                num_templates_bounds=settings['templates']['range'],
                                num_tt_channels_bounds=settings['travel_times']['num_channels_bounds'])
 
     events = []
-    for day in tqdm(range_days(cli_args.begin_date, cli_args.end_date),
-                    total=(cli_args.end_date - cli_args.begin_date).days,
+    for day in tqdm(range_days(cli_args.begin, cli_args.end),
+                    total=(cli_args.end - cli_args.begin).days,
                     disable=not is_interactive):
-        day_stream = read_continuous_stream(cli_args.continuous_dir_path,
+        day_stream = read_continuous_stream(cli_args.continuous,
                                             day,
-                                            settings['continuous']['num_channels_min'],
-                                            freqmin=settings['continuous']['lowpass_freq'],
-                                            freqmax=settings['continuous']['highpass_freq'])
+                                            cli_args.min_channels,
+                                            freqmin=cli_args.lowpass_freq,
+                                            freqmax=cli_args.highpass_freq)
         for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False,
                                                                                        disable=not is_interactive):
 
@@ -69,12 +76,11 @@ if __name__ == '__main__':
                                                           'correlation', 'stack_height', 'stack_dmad',
                                                           'num_channels'])
     events_dataframe.sort_values(by=['template', 'date'], inplace=True)
-
-    output_path = Path(cli_args.output_path)
-    logging.info(f"Writing outputs to {output_path}")
     events_dataframe['crt_pre'] = events_dataframe['stack_height'] / events_dataframe['stack_dmad']
     events_dataframe['crt_post'] = events_dataframe['correlation'] / events_dataframe['stack_dmad']
-    events_dataframe.to_csv(output_path, index=False,
+    logging.info(f"Writing outputs to {cli_args.output}")
+    events_dataframe.to_csv(cli_args.output,
+                            index=False,
                             date_format='%Y-%m-%dT%H:%M:%S.%fZ',
                             float_format='%.3f',
                             columns=['template', 'date', 'magnitude',
