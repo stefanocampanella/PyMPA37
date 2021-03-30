@@ -15,8 +15,7 @@ from pympa.pympa import read_templates, range_days, read_continuous_stream, corr
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
 parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
-parser.add_argument("begin", help="Datetime begin", type=datetime.fromisoformat)
-parser.add_argument("end", help="Datetime end", type=datetime.fromisoformat)
+parser.add_argument("date", help="Datetime begin", type=datetime.fromisoformat)
 parser.add_argument("output", help="Output file path")
 parser.add_argument("--min_channels", help="Minimum number of channels", type=int, default=6)
 parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=15)
@@ -46,17 +45,13 @@ if __name__ == '__main__':
                                num_tt_channels_bounds=settings['travel_times']['num_channels_bounds'])
 
     events = []
-    for day in tqdm(range_days(cli_args.begin, cli_args.end),
-                    total=(cli_args.end - cli_args.begin).days,
-                    disable=not is_interactive):
-        day_stream = read_continuous_stream(cli_args.continuous,
-                                            day,
-                                            cli_args.min_channels,
-                                            freqmin=cli_args.lowpass_freq,
-                                            freqmax=cli_args.highpass_freq)
-        for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, leave=False,
-                                                                                       disable=not is_interactive):
-
+    day_stream = read_continuous_stream(cli_args.continuous,
+                                        cli_args.date,
+                                        cli_args.min_channels,
+                                        freqmin=cli_args.lowpass_freq,
+                                        freqmax=cli_args.highpass_freq)
+    for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, disable=not is_interactive):
+        try:
             detections = correlation_detector(template_stream,
                                               day_stream,
                                               travel_times,
@@ -71,6 +66,10 @@ if __name__ == '__main__':
                     record = (template_number, date.datetime, magnitude, correlation,
                               stack_height, stack_dmad, num_channels)
                     events.append(record)
+        except ValueError as err:
+            logging.info(f"{err} occurred during processing of template {template_number}, {date}")
+
+
     events_dataframe = pd.DataFrame.from_records(events,
                                                  columns=['template', 'date', 'magnitude',
                                                           'correlation', 'stack_height', 'stack_dmad',
