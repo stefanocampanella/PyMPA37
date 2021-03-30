@@ -10,33 +10,44 @@ from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks
 
 
-def read_continuous_stream(dir_path, day, freqmin=3.0, freqmax=8.0):
-    continuous_stream = Stream()
+def read_continuous_stream(dir_path, day, executor, freqmin=3.0, freqmax=8.0):
+    begin = UTCDateTime(day)
     logging.info(f"Reading continuous data from {dir_path}")
+    futures = []
     for filepath in dir_path.glob(f"{day.strftime('%y%m%d')}*"):
-        try:
-            logging.debug(f"Reading {filepath}")
-            with filepath.open('rb') as file:
-                if stream := read(file, dtype="float32"):
-                    trace, = stream
-                    trace.filter("bandpass",
-                                 freqmin=freqmin,
-                                 freqmax=freqmax,
-                                 zerophase=True)
-                    begin = UTCDateTime(day)
-                    trace.trim(starttime=begin,
-                               endtime=begin + datetime.timedelta(days=1),
-                               pad=True,
-                               fill_value=0)
-                    continuous_stream += trace
-                else:
-                    logging.warning(f"Empty stream found while reading {filepath}")
-        except OSError as err:
-            logging.warning(f"{err} occurred while reading {filepath}")
+        future = executor.submit(read_continuous_stream_kernel, filepath, begin, freqmin, freqmax)
+        futures.append(future)
+    continuous_stream = Stream()
+    for future in as_completed(futures):
+        if trace := future.result():
+            continuous_stream += trace
     return continuous_stream
 
 
-def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_max):
+def read_continuous_stream_kernel(filepath, begin, freqmin, freqmax):
+    try:
+        logging.debug(f"Reading {filepath}")
+        with filepath.open('rb') as file:
+            if stream := read(file, dtype="float32"):
+                trace, = stream
+                trace.filter("bandpass",
+                             freqmin=freqmin,
+                             freqmax=freqmax,
+                             zerophase=True)
+                trace.trim(starttime=begin,
+                           endtime=begin + datetime.timedelta(days=1),
+                           pad=True,
+                           fill_value=0)
+                return trace
+            else:
+                logging.warning(f"Empty stream found while reading {filepath}")
+                return None
+    except OSError as err:
+        logging.warning(f"{err} occurred while reading {filepath}")
+        return None
+
+
+def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_max, executor):
     logging.info(f"Reading catalog from {catalog_filepath}")
     catalog = read_events(catalog_filepath)
     logging.info(f"Reading travel times from {travel_times_dirpath}")
@@ -46,7 +57,8 @@ def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, nu
             travel_times = read_travel_times(travel_times_filepath, num_channels_max)
             template_stream = read_template_stream(templates_dirpath,
                                                    template_number,
-                                                   travel_times.keys())
+                                                   travel_times.keys(),
+                                                   executor)
             template_magnitude = catalog[template_number].magnitudes[0].mag
             yield template_number, template_stream, travel_times, template_magnitude
         except OSError as err:
@@ -80,24 +92,35 @@ def read_travel_times(filepath, num_channels_max):
     return travel_times
 
 
-def read_template_stream(dir_path, template_number, channel_list):
-    template_stream = Stream()
+def read_template_stream(dir_path, template_number, channel_list, executor):
+    futures = []
     for network, station, channel in channel_list:
-        try:
-            filepath = dir_path / f"{template_number}.{network}.{station}..{channel}.mseed"
-            logging.debug(f"Reading {filepath}")
-            with filepath.open('rb') as file:
-                template_stream += read(file, dtype="float32")
-        except OSError as err:
-            logging.warning(f"{err} occurred while reading template {network}.{station}..{channel}")
+        future = executor.submit(read_template_stream_kernel, dir_path, template_number, network, station, channel)
+        futures.append(future)
+    template_stream = Stream()
+    for future in as_completed(futures):
+        if stream := future.result():
+            template_stream += stream
     return template_stream
+
+
+def read_template_stream_kernel(dir_path, template_number, network, station, channel):
+    try:
+        filepath = dir_path / f"{template_number}.{network}.{station}..{channel}.mseed"
+        logging.debug(f"Reading {filepath}")
+        with filepath.open('rb') as file:
+            return read(file, dtype="float32")
+    except OSError as err:
+        logging.warning(f"{err} occurred while reading template {network}.{station}..{channel}")
+        return None
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,
                          threshold_factor, tolerance, executor, correlations_std_bounds=(0.25, 1.5)):
     events_list = []
-    correlation_stream = correlate_streams(template_stream, continuous_stream, executor, std_bounds=correlations_std_bounds)
-    stacked_stream = stack(correlation_stream, travel_times)
+    correlation_stream = correlate_streams(template_stream, continuous_stream, executor,
+                                           std_bounds=correlations_std_bounds)
+    stacked_stream = stack(correlation_stream, travel_times, executor)
     mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
@@ -166,24 +189,35 @@ def correlate_template(data, template):
     return cross_correlation
 
 
-def stack(stream, travel_times):
-    stacked_stream = stream.copy()
-    for trace in stacked_stream:
-        key = trace.stats.network, trace.stats.station, trace.stats.channel
-        starttime = trace.stats.starttime + travel_times[key]
-        endtime = starttime + datetime.timedelta(days=1)
-        trace.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
+def stack(stream, travel_times, executor):
+    futures = []
+    for trace in stream:
+        future = executor.submit(stack_kernel, trace, travel_times)
+        futures.append(future)
+    stacked_stream = Stream()
+    for future in as_completed(futures):
+        stacked_stream += future.result()
     return stacked_stream
+
+
+def stack_kernel(trace, travel_times):
+    trace_copy = trace.copy()
+    key = trace_copy.stats.network, trace_copy.stats.station, trace_copy.stats.channel
+    starttime = trace_copy.stats.starttime + travel_times[key]
+    endtime = starttime + datetime.timedelta(days=1)
+    trace_copy.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
+    return trace_copy
 
 
 def fix_correlation(stacked_stream, trigger_sample, tolerance, executor):
     futures = []
     for trace in stacked_stream:
-        future = executor.submit(fix_channel, trace, trigger_sample, tolerance)
+        future = executor.submit(fix_correlation_kernel, trace, trigger_sample, tolerance)
         futures.append(future)
     return [future.result() for future in as_completed(futures)]
 
-def fix_channel(correlation_trace, trigger_sample, tolerance):
+
+def fix_correlation_kernel(correlation_trace, trigger_sample, tolerance):
     lower = max(trigger_sample - tolerance, 0)
     upper = min(trigger_sample + tolerance + 1, len(correlation_trace.data))
     stats = correlation_trace.stats
@@ -200,7 +234,7 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
         if stream := template_stream.select(station=continuous_trace.stats.station,
                                             channel=continuous_trace.stats.channel):
             template_trace, = stream
-            future = executor.submit(channel_magnitude, template_trace, continuous_trace, template_magnitude,
+            future = executor.submit(magnitude_kernel, template_trace, continuous_trace, template_magnitude,
                                      trigger_time, reference_time)
             futures.append(future)
     channel_magnitudes = np.fromiter((future.result() for future in as_completed(futures)), dtype=float)
@@ -209,7 +243,7 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
     return bn.nanmean(valid_channel_magnitudes)
 
 
-def channel_magnitude(template, data, template_magnitude, trigger_time, reference_time):
+def magnitude_kernel(template, data, template_magnitude, trigger_time, reference_time):
     timestart = trigger_time + (template.stats.starttime - reference_time)
     timend = timestart + (template.stats.endtime - template.stats.starttime)
     continuous_trace_view = data.slice(starttime=timestart, endtime=timend)
