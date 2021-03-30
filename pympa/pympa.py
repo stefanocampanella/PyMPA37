@@ -16,18 +16,21 @@ def read_continuous_stream(dir_path, day, freqmin=3.0, freqmax=8.0):
         try:
             logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
-                trace, = read(file, dtype="float32")
-                trace.filter("bandpass",
-                             freqmin=freqmin,
-                             freqmax=freqmax,
-                             zerophase=True)
-                begin = UTCDateTime(day)
-                trace.trim(starttime=begin,
-                           endtime=begin + datetime.timedelta(days=1),
-                           pad=True,
-                           fill_value=0)
-                continuous_stream += trace
-        except (OSError, ValueError) as err:
+                if stream := read(file, dtype="float32"):
+                    trace, = stream
+                    trace.filter("bandpass",
+                                 freqmin=freqmin,
+                                 freqmax=freqmax,
+                                 zerophase=True)
+                    begin = UTCDateTime(day)
+                    trace.trim(starttime=begin,
+                               endtime=begin + datetime.timedelta(days=1),
+                               pad=True,
+                               fill_value=0)
+                    continuous_stream += trace
+                else:
+                    logging.warning(f"Empty stream found while reading {filepath}")
+        except OSError as err:
             logging.warning(f"{err} occurred while reading {filepath}")
     return continuous_stream
 
@@ -124,14 +127,17 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
         network = template_trace.stats.network
         station = template_trace.stats.station
         channel = template_trace.stats.channel
-        continuous_trace, = continuous_stream.select(network=network, station=station, channel=channel)
-        correlation = correlate_template(continuous_trace.data, template_trace.data)
-        header = {"network": continuous_trace.stats.network,
-                  "station": continuous_trace.stats.station,
-                  "channel": continuous_trace.stats.channel,
-                  "starttime": continuous_trace.stats.starttime,
-                  "sampling_rate": continuous_trace.stats.sampling_rate}
-        correlation_stream += Trace(data=correlation, header=header)
+        if selection_stream := continuous_stream.select(network=network, station=station, channel=channel):
+            continuous_trace, = selection_stream
+            correlation = correlate_template(continuous_trace.data, template_trace.data)
+            header = {"network": continuous_trace.stats.network,
+                      "station": continuous_trace.stats.station,
+                      "channel": continuous_trace.stats.channel,
+                      "starttime": continuous_trace.stats.starttime,
+                      "sampling_rate": continuous_trace.stats.sampling_rate}
+            correlation_stream += Trace(data=correlation, header=header)
+        else:
+            logging.warning(f"Trace {network}.{station}..{channel} not found in continuous data")
 
     stds = np.fromiter((bn.nanstd(np.abs(trace.data)) for trace in correlation_stream), dtype=float)
     relative_stds = stds / bn.nanmean(stds)

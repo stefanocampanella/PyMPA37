@@ -2,7 +2,6 @@
 import argparse
 import logging
 import os
-import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -31,11 +30,11 @@ parser.add_argument("--travel_times", help="Relative path to travel times direct
 parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
 parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
+parser.add_argument("--loglevel", help="Log level", default='error')
 cli_args = parser.parse_args()
 
 logging.basicConfig(format='%(levelname)s: %(message)s',
-                    level=logging.DEBUG,
-                    filename='run.log')
+                    level=getattr(logging, cli_args.loglevel.upper()))
 
 if __name__ == '__main__':
     day_stream = read_continuous_stream(cli_args.root / cli_args.continuous,
