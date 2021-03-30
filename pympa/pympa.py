@@ -6,7 +6,8 @@ from math import log10
 
 import bottleneck as bn
 import numpy as np
-from obspy import read, Stream, Trace, UTCDateTime, read_events
+import pandas as pd
+from obspy import read, Stream, Trace, UTCDateTime
 from scipy.signal import find_peaks
 
 
@@ -28,7 +29,7 @@ def read_continuous_stream_kernel(filepath, begin, freqmin, freqmax):
     try:
         logging.debug(f"Reading {filepath}")
         with filepath.open('rb') as file:
-            if stream := read(file, dtype="float32"):
+            if stream := read(file, dtype=np.float32):
                 trace, = stream
                 trace.filter("bandpass",
                              freqmin=freqmin,
@@ -49,7 +50,7 @@ def read_continuous_stream_kernel(filepath, begin, freqmin, freqmax):
 
 def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_max, executor):
     logging.info(f"Reading catalog from {catalog_filepath}")
-    catalog = read_events(catalog_filepath)
+    template_magnitudes = pd.read_csv(catalog_filepath, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
     logging.info(f"Reading travel times from {travel_times_dirpath}")
     logging.info(f"Reading templates from {templates_dirpath}")
     for template_number, travel_times_filepath in range_templates(travel_times_dirpath):
@@ -59,8 +60,7 @@ def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, nu
                                                    template_number,
                                                    travel_times.keys(),
                                                    executor)
-            template_magnitude = catalog[template_number].magnitudes[0].mag
-            yield template_number, template_stream, travel_times, template_magnitude
+            yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
         except OSError as err:
             logging.warning(f"{err} occurred while reading template {template_number}")
             continue
@@ -109,7 +109,7 @@ def read_template_stream_kernel(dir_path, template_number, network, station, cha
         filepath = dir_path / f"{template_number}.{network}.{station}..{channel}.mseed"
         logging.debug(f"Reading {filepath}")
         with filepath.open('rb') as file:
-            return read(file, dtype="float32")
+            return read(file, dtype=np.float32)
     except OSError as err:
         logging.warning(f"{err} occurred while reading template {network}.{station}..{channel}")
         return None
@@ -234,8 +234,10 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
         if stream := template_stream.select(station=continuous_trace.stats.station,
                                             channel=continuous_trace.stats.channel):
             template_trace, = stream
-            future = executor.submit(magnitude_kernel, template_trace, continuous_trace, template_magnitude,
-                                     trigger_time, reference_time)
+            timestart = trigger_time + (template_trace.stats.starttime - reference_time)
+            timend = timestart + (template_trace.stats.endtime - template_trace.stats.starttime)
+            future = executor.submit(magnitude_kernel, continuous_trace, template_trace, template_magnitude,
+                                     timestart, timend)
             futures.append(future)
     channel_magnitudes = np.fromiter((future.result() for future in as_completed(futures)), dtype=float)
     absolute_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
@@ -243,11 +245,9 @@ def magnitude(continuous_stream, template_stream, trigger_time, template_magnitu
     return bn.nanmean(valid_channel_magnitudes)
 
 
-def magnitude_kernel(template, data, template_magnitude, trigger_time, reference_time):
-    timestart = trigger_time + (template.stats.starttime - reference_time)
-    timend = timestart + (template.stats.endtime - template.stats.starttime)
-    continuous_trace_view = data.slice(starttime=timestart, endtime=timend)
+def magnitude_kernel(continuous_trace, template_trace, template_magnitude, timestart, timend):
+    continuous_trace_view = continuous_trace.slice(starttime=timestart, endtime=timend)
     continuous_absolute_max = bn.nanmax(np.abs(continuous_trace_view.data))
-    template_absolute_max = bn.nanmax(np.abs(template.data))
+    template_absolute_max = bn.nanmax(np.abs(template_trace.data))
     event_magnitude = template_magnitude - log10(template_absolute_max / continuous_absolute_max)
     return event_magnitude
