@@ -65,8 +65,8 @@ if __name__ == '__main__':
                               stack_height, stack_dmad, num_channels)
                     events.append(record)
                 else:
-                    logging.debug(f"Skipping event for template {template_number} "
-                                  f"on {date} with not enough channels above threshold")
+                    logging.debug(f"Skipping detection at {date} for template {template_number}, "
+                                  f"not enough channels ({num_channels}) above threshold")
         except ValueError as err:
             logging.warning(f"{err} occurred during processing of "
                             f"template {template_number}, {cli_args.date.strftime('%Y-%m-%d')}")

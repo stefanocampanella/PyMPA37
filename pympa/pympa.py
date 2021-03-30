@@ -70,25 +70,25 @@ def read_travel_times(filepath, num_channels_max):
             key = tuple(key.split('.'))
             value = float(value)
             travel_times[key] = value
-    if len(travel_times) > num_channels_max:
-        channels_to_remove = [name
-                              for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                              if n >= num_channels_max]
-        for channel in channels_to_remove:
-            del travel_times[channel]
+        if len(travel_times) > num_channels_max:
+            channels_to_remove = [name
+                                  for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
+                                  if n >= num_channels_max]
+            for channel in channels_to_remove:
+                del travel_times[channel]
     return travel_times
 
 
 def read_template_stream(dir_path, template_number, channel_list):
     template_stream = Stream()
-    for net, sta, chn in channel_list:
+    for network, station, channel in channel_list:
         try:
-            filepath = dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
+            filepath = dir_path / f"{template_number}.{network}.{station}..{channel}.mseed"
             logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
                 template_stream += read(file, dtype="float32")
         except OSError as err:
-            logging.warning(f"{err} occurred while reading template {net}.{sta}..{chn}")
+            logging.warning(f"{err} occurred while reading template {network}.{station}..{channel}")
     return template_stream
 
 
@@ -137,7 +137,7 @@ def correlate_streams(template_stream, continuous_stream, std_bounds=(0.25, 1.5)
                       "sampling_rate": continuous_trace.stats.sampling_rate}
             correlation_stream += Trace(data=correlation, header=header)
         else:
-            logging.warning(f"Trace {network}.{station}..{channel} not found in continuous data")
+            logging.debug(f"Trace {network}.{station}..{channel} not found in continuous data")
 
     stds = np.fromiter((bn.nanstd(np.abs(trace.data)) for trace in correlation_stream), dtype=float)
     relative_stds = stds / bn.nanmean(stds)
