@@ -6,11 +6,10 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-from yaml import load, FullLoader
 from tqdm import tqdm
 import pandas as pd
 
-from pympa.pympa import read_templates, range_days, read_continuous_stream, correlation_detector
+from pympa.pympa import read_templates, read_continuous_stream, correlation_detector
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
@@ -21,6 +20,14 @@ parser.add_argument("--min_channels", help="Minimum number of channels", type=in
 parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=15)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
+parser.add_argument("--threshold_factor", help="Factor for the mean correlation peak MAD threshold",
+                    type=float, default=8.0)
+parser.add_argument("--min_correlation_std", help="Minimum correlation std", type=float, default=0.25)
+parser.add_argument("--max_correlation_std", help="Maximum correlation std", type=float, default=1.5)
+parser.add_argument("--cc_filter_num_channels", help="Minimum number of channels with correlation above threshold",
+                    type=int, default=6)
+parser.add_argument("--cc_filter_threshold", help="Correlation threshold per channels", type=float, default=0.35)
+parser.add_argument("--sample_tolerance", help="Maximum lag in samples", type=int, default=6)
 parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='travel_times')
 parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
@@ -34,15 +41,11 @@ logging.basicConfig(stream=sys.stderr,
 if __name__ == '__main__':
     is_interactive = os.isatty(sys.stdout.fileno())
 
-    with open("settings.yaml") as settings_file:
-        settings = load(settings_file, FullLoader)
-
     templates = read_templates(cli_args.root / cli_args.templates,
                                cli_args.root / cli_args.travel_times,
                                cli_args.root / cli_args.catalog,
                                cli_args.min_channels,
-                               num_templates_bounds=settings['templates']['range'],
-                               num_tt_channels_bounds=settings['travel_times']['num_channels_bounds'])
+                               cli_args.max_channels)
 
     events = []
     day_stream = read_continuous_stream(cli_args.continuous,
@@ -50,25 +53,25 @@ if __name__ == '__main__':
                                         cli_args.min_channels,
                                         freqmin=cli_args.lowpass_freq,
                                         freqmax=cli_args.highpass_freq)
-    for template_number, template_stream, travel_times, template_magnitude in tqdm(templates, disable=not is_interactive):
+    for template_number, template_stream, travel_times, template_magnitude in tqdm(templates,
+                                                                                   disable=not is_interactive):
         try:
             detections = correlation_detector(template_stream,
                                               day_stream,
                                               travel_times,
                                               template_magnitude,
-                                              settings['detector']['threshold_factor'],
-                                              settings['detector']['samples_tolerance'],
-                                              correlations_std_bounds=settings['detector']['correlations_std_bounds'])
+                                              cli_args.threshold_factor,
+                                              cli_args.sample_tolerance,
+                                              (cli_args.min_correlation_std, cli_args.max_correlation_std))
             for detection in detections:
                 date, magnitude, correlation, stack_height, stack_dmad, channels = detection
-                num_channels = sum(1 for _, cc, _ in channels if cc > settings['cc_filter']['threshold'])
-                if num_channels >= settings['cc_filter']['num_channels']:
+                num_channels = sum(1 for _, cc, _ in channels if cc > cli_args.cc_filter_threshold)
+                if num_channels >= cli_args.cc_filter_num_channels:
                     record = (template_number, date.datetime, magnitude, correlation,
                               stack_height, stack_dmad, num_channels)
                     events.append(record)
         except ValueError as err:
-            logging.info(f"{err} occurred during processing of template {template_number}, {date}")
-
+            logging.info(f"{err} occurred during processing of template {template_number}, {cli_args.date}")
 
     events_dataframe = pd.DataFrame.from_records(events,
                                                  columns=['template', 'date', 'magnitude',

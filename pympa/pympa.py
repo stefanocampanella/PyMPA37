@@ -9,25 +9,20 @@ from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks
 
 
-def range_templates(travel_times_dirpath, num_templates_bounds):
+def range_templates(travel_times_dirpath):
     file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
-    num_template_min, num_template_max = num_templates_bounds
     for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
         match = re.match(file_regex, travel_times_filepath.name)
         template_number = int(match['template_number'])
-        if num_template_min <= template_number < num_template_max:
-            yield template_number, travel_times_filepath
+        yield template_number, travel_times_filepath
 
 
-def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_min,
-                   num_templates_bounds=None, num_tt_channels_bounds=None):
-    num_templates_bounds = num_templates_bounds if num_templates_bounds else (0, np.inf)
-    num_tt_channels_bounds = num_tt_channels_bounds if num_tt_channels_bounds else (0, np.inf)
+def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_min, num_channels_max):
     catalog = read_events(catalog_filepath)
     templates = []
-    for template_number, travel_times_filepath in range_templates(travel_times_dirpath, num_templates_bounds):
+    for template_number, travel_times_filepath in range_templates(travel_times_dirpath):
         try:
-            travel_times = read_travel_times(travel_times_filepath, num_tt_channels_bounds)
+            travel_times = read_travel_times(travel_times_filepath, num_channels_min, num_channels_max)
             template_stream = read_template_stream(templates_dirpath,
                                                    template_number,
                                                    travel_times.keys(),
@@ -40,8 +35,7 @@ def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, nu
     return templates
 
 
-def read_travel_times(travel_times_path, num_channels_bounds):
-    num_channels_min, num_channels_max = num_channels_bounds
+def read_travel_times(travel_times_path, num_channels_min, num_channels_max):
     travel_times = {}
     with open(travel_times_path, "r") as file:
         while line := file.readline():
@@ -74,13 +68,6 @@ def read_template_stream(templates_dir_path, template_number, channel_list, num_
     if len(template_stream) < num_channels_min:
         raise RuntimeError(f"Not enough channels for template {template_number}")
     return template_stream
-
-
-def range_days(start, stop):
-    date = start
-    while date < stop:
-        yield date
-        date += datetime.timedelta(days=1)
 
 
 def read_continuous_stream(continuous_dir_path, day, num_channels_min, freqmin=3.0, freqmax=8.0):
