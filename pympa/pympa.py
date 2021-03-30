@@ -9,71 +9,12 @@ from obspy import read, Stream, Trace, UTCDateTime, read_events
 from scipy.signal import find_peaks
 
 
-def range_templates(travel_times_dirpath):
-    file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
-    for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
-        match = re.match(file_regex, travel_times_filepath.name)
-        template_number = int(match['template_number'])
-        yield template_number, travel_times_filepath
-
-
-def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_min, num_channels_max):
-    catalog = read_events(catalog_filepath)
-    templates = []
-    for template_number, travel_times_filepath in range_templates(travel_times_dirpath):
-        try:
-            travel_times = read_travel_times(travel_times_filepath, num_channels_min, num_channels_max)
-            template_stream = read_template_stream(templates_dirpath,
-                                                   template_number,
-                                                   travel_times.keys(),
-                                                   num_channels_min)
-            template_magnitude = catalog[template_number].magnitudes[0].mag
-            templates.append((template_number, template_stream, travel_times, template_magnitude))
-        except Exception as err:
-            logging.warning(f"{err} occurred while processing template {template_number}")
-            continue
-    return templates
-
-
-def read_travel_times(travel_times_path, num_channels_min, num_channels_max):
-    travel_times = {}
-    with open(travel_times_path, "r") as file:
-        while line := file.readline():
-            key, value = line.split(' ')
-            key = tuple(key.split('.'))
-            value = float(value)
-            travel_times[key] = value
-
-    if len(travel_times) < num_channels_min:
-        raise RuntimeError(f"Not enough travel times in {travel_times_path}")
-    elif len(travel_times) > num_channels_max:
-        channels_to_remove = [name
-                              for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                              if n >= num_channels_max]
-        for channel in channels_to_remove:
-            del travel_times[channel]
-    return travel_times
-
-
-def read_template_stream(templates_dir_path, template_number, channel_list, num_channels_min):
-    template_stream = Stream()
-    for net, sta, chn in channel_list:
-        try:
-            filepath = templates_dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
-            with filepath.open('rb') as file:
-                logging.debug(f"Reading {filepath}")
-                template_stream += read(file, dtype="float32")
-        except Exception as err:
-            logging.warning(f"{err}")
-    if len(template_stream) < num_channels_min:
-        raise RuntimeError(f"Not enough channels for template {template_number}")
-    return template_stream
-
-
-def read_continuous_stream(continuous_dir_path, day, num_channels_min, freqmin=3.0, freqmax=8.0):
+def read_continuous_stream(dir_path, day, freqmin=3.0, freqmax=8.0):
     continuous_stream = Stream()
-    for filepath in continuous_dir_path.glob(f"{day.strftime('%y%m%d')}*"):
+    logging.info(f"Reading continuous data from {dir_path}")
+    for filepath in dir_path.glob(f"{day.strftime('%y%m%d')}*"):
         try:
+            logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
                 trace, = read(file, dtype="float32")
                 trace.filter("bandpass",
@@ -86,11 +27,66 @@ def read_continuous_stream(continuous_dir_path, day, num_channels_min, freqmin=3
                            pad=True,
                            fill_value=0)
                 continuous_stream += trace
-        except Exception as err:
-            logging.warning(f"{err}")
-    if len(continuous_stream) < num_channels_min:
-        raise RuntimeError(f"Number of channels for {day} trace")
+        except (OSError, ValueError) as err:
+            logging.warning(f"{err} occurred while reading {filepath}")
     return continuous_stream
+
+
+def read_templates(templates_dirpath, travel_times_dirpath, catalog_filepath, num_channels_max):
+    logging.info(f"Reading catalog from {catalog_filepath}")
+    catalog = read_events(catalog_filepath)
+    logging.info(f"Reading travel times from {travel_times_dirpath}")
+    logging.info(f"Reading templates from {templates_dirpath}")
+    for template_number, travel_times_filepath in range_templates(travel_times_dirpath):
+        try:
+            travel_times = read_travel_times(travel_times_filepath, num_channels_max)
+            template_stream = read_template_stream(templates_dirpath,
+                                                   template_number,
+                                                   travel_times.keys())
+            template_magnitude = catalog[template_number].magnitudes[0].mag
+            yield template_number, template_stream, travel_times, template_magnitude
+        except OSError as err:
+            logging.warning(f"{err} occurred while reading template {template_number}")
+            continue
+
+
+def range_templates(travel_times_dirpath):
+    file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
+    for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
+        match = re.match(file_regex, travel_times_filepath.name)
+        template_number = int(match['template_number'])
+        yield template_number, travel_times_filepath
+
+
+def read_travel_times(filepath, num_channels_max):
+    travel_times = {}
+    logging.debug(f"Reading {filepath}")
+    with open(filepath, "r") as file:
+        while line := file.readline():
+            key, value = line.split(' ')
+            key = tuple(key.split('.'))
+            value = float(value)
+            travel_times[key] = value
+    if len(travel_times) > num_channels_max:
+        channels_to_remove = [name
+                              for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
+                              if n >= num_channels_max]
+        for channel in channels_to_remove:
+            del travel_times[channel]
+    return travel_times
+
+
+def read_template_stream(dir_path, template_number, channel_list):
+    template_stream = Stream()
+    for net, sta, chn in channel_list:
+        try:
+            filepath = dir_path / f"{template_number}.{net}.{sta}..{chn}.mseed"
+            logging.debug(f"Reading {filepath}")
+            with filepath.open('rb') as file:
+                template_stream += read(file, dtype="float32")
+        except OSError as err:
+            logging.warning(f"{err} occurred while reading template {net}.{sta}..{chn}")
+    return template_stream
 
 
 def correlation_detector(template_stream, continuous_stream, travel_times, template_magnitude,

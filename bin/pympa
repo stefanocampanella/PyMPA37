@@ -16,7 +16,6 @@ parser = argparse.ArgumentParser(prog="PyMPA37",
 parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
 parser.add_argument("date", help="Datetime begin", type=datetime.fromisoformat)
 parser.add_argument("output", help="Output file path")
-parser.add_argument("--min_channels", help="Minimum number of channels", type=int, default=6)
 parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=15)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
@@ -34,27 +33,23 @@ parser.add_argument("--catalog", help="Relative path to event catalog", type=Pat
 parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
 cli_args = parser.parse_args()
 
-logging.basicConfig(stream=sys.stderr,
-                    format='%(levelname)s: %(message)s',
-                    level=logging.ERROR)
+logging.basicConfig(format='%(levelname)s: %(message)s',
+                    level=logging.DEBUG,
+                    filename='run.log')
 
 if __name__ == '__main__':
-    is_interactive = os.isatty(sys.stdout.fileno())
-
-    templates = read_templates(cli_args.root / cli_args.templates,
-                               cli_args.root / cli_args.travel_times,
-                               cli_args.root / cli_args.catalog,
-                               cli_args.min_channels,
-                               cli_args.max_channels)
-
-    events = []
-    day_stream = read_continuous_stream(cli_args.continuous,
+    day_stream = read_continuous_stream(cli_args.root / cli_args.continuous,
                                         cli_args.date,
-                                        cli_args.min_channels,
                                         freqmin=cli_args.lowpass_freq,
                                         freqmax=cli_args.highpass_freq)
-    for template_number, template_stream, travel_times, template_magnitude in tqdm(templates,
-                                                                                   disable=not is_interactive):
+    templates = tqdm(read_templates(cli_args.root / cli_args.templates,
+                                    cli_args.root / cli_args.travel_times,
+                                    cli_args.root / cli_args.catalog,
+                                    cli_args.max_channels),
+                     total=len(os.listdir(cli_args.root / cli_args.travel_times)),
+                     disable=None)
+    events = []
+    for template_number, template_stream, travel_times, template_magnitude in templates:
         try:
             detections = correlation_detector(template_stream,
                                               day_stream,
@@ -70,8 +65,12 @@ if __name__ == '__main__':
                     record = (template_number, date.datetime, magnitude, correlation,
                               stack_height, stack_dmad, num_channels)
                     events.append(record)
+                else:
+                    logging.debug(f"Skipping event for template {template_number} "
+                                  f"on {date} with not enough channels above threshold")
         except ValueError as err:
-            logging.info(f"{err} occurred during processing of template {template_number}, {cli_args.date}")
+            logging.warning(f"{err} occurred during processing of "
+                            f"template {template_number}, {cli_args.date.strftime('%Y-%m-%d')}")
 
     events_dataframe = pd.DataFrame.from_records(events,
                                                  columns=['template', 'date', 'magnitude',
@@ -89,4 +88,5 @@ if __name__ == '__main__':
                                      'correlation', 'crt_post',
                                      'stack_height', 'crt_pre',
                                      'num_channels'],
-                            header=False, sep=' ')
+                            header=False,
+                            sep=' ')
