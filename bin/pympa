@@ -2,10 +2,12 @@
 import argparse
 import logging
 import os
+from concurrent.futures.thread import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
 
 from tqdm import tqdm
+from psutil import cpu_count
 import pandas as pd
 
 from pympa.pympa import read_templates, read_continuous_stream, correlation_detector
@@ -31,6 +33,7 @@ parser.add_argument("--templates", help="Relative path to templates directory", 
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
 parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
 parser.add_argument("--loglevel", help="Log level", default='error')
+parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=cpu_count())
 cli_args = parser.parse_args()
 
 logging.basicConfig(format='%(levelname)s: %(message)s',
@@ -48,28 +51,30 @@ if __name__ == '__main__':
                      total=len(os.listdir(cli_args.root / cli_args.travel_times)),
                      disable=None)
     events = []
-    for template_number, template_stream, travel_times, template_magnitude in templates:
-        try:
-            detections = correlation_detector(template_stream,
-                                              day_stream,
-                                              travel_times,
-                                              template_magnitude,
-                                              cli_args.threshold_factor,
-                                              cli_args.sample_tolerance,
-                                              (cli_args.min_correlation_std, cli_args.max_correlation_std))
-            for detection in detections:
-                date, magnitude, correlation, stack_height, stack_dmad, channels = detection
-                num_channels = sum(1 for _, cc, _ in channels if cc > cli_args.cc_filter_threshold)
-                if num_channels >= cli_args.cc_filter_num_channels:
-                    record = (template_number, date.datetime, magnitude, correlation,
-                              stack_height, stack_dmad, num_channels)
-                    events.append(record)
-                else:
-                    logging.debug(f"Skipping detection at {date} for template {template_number}, "
-                                  f"not enough channels ({num_channels}) above threshold")
-        except ValueError as err:
-            logging.warning(f"{err} occurred during processing of "
-                            f"template {template_number}, {cli_args.date.strftime('%Y-%m-%d')}")
+    with ThreadPoolExecutor(max_workers=cli_args.num_threads) as executor:
+        for template_number, template_stream, travel_times, template_magnitude in templates:
+            try:
+                detections = correlation_detector(template_stream,
+                                                  day_stream,
+                                                  travel_times,
+                                                  template_magnitude,
+                                                  cli_args.threshold_factor,
+                                                  cli_args.sample_tolerance,
+                                                  executor,
+                                                  (cli_args.min_correlation_std, cli_args.max_correlation_std))
+                for detection in detections:
+                    date, magnitude, correlation, stack_height, stack_dmad, channels = detection
+                    num_channels = sum(1 for _, cc, _ in channels if cc > cli_args.cc_filter_threshold)
+                    if num_channels >= cli_args.cc_filter_num_channels:
+                        record = (template_number, date.datetime, magnitude, correlation,
+                                  stack_height, stack_dmad, num_channels)
+                        events.append(record)
+                    else:
+                        logging.debug(f"Skipping detection at {date} for template {template_number}, "
+                                      f"not enough channels ({num_channels}) above threshold")
+            except ValueError as err:
+                logging.warning(f"{err} occurred during processing of "
+                                f"template {template_number}, {cli_args.date.strftime('%Y-%m-%d')}")
 
     events_dataframe = pd.DataFrame.from_records(events,
                                                  columns=['template', 'date', 'magnitude',
@@ -81,11 +86,11 @@ if __name__ == '__main__':
     logging.info(f"Writing outputs to {cli_args.output}")
     events_dataframe.to_csv(cli_args.output,
                             index=False,
+                            header=False,
+                            sep=' ',
                             date_format='%Y-%m-%dT%H:%M:%S.%fZ',
                             float_format='%.3f',
                             columns=['template', 'date', 'magnitude',
                                      'correlation', 'crt_post',
                                      'stack_height', 'crt_pre',
-                                     'num_channels'],
-                            header=False,
-                            sep=' ')
+                                     'num_channels'])
