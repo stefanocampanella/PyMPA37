@@ -48,7 +48,7 @@ def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Exe
 
 
 def read_templates(templates_dirpath: Path, travel_times_dirpath: Path, catalog_filepath: Path, num_channels_max: int,
-                   executor: Executor) -> Stream:
+                   executor: Executor) -> Sequence[Tuple[int, Stream, Tuple[str, int], float]]:
     logging.info(f"Reading catalog from {catalog_filepath}")
     template_magnitudes = pd.read_csv(catalog_filepath, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
     logging.info(f"Reading travel times from {travel_times_dirpath}")
