@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(prog="PyMPA37",
 parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
 parser.add_argument("date", help="Datetime begin", type=datetime.fromisoformat)
 parser.add_argument("output", help="Output file path")
-parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=15)
+parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=16)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
 parser.add_argument("--threshold_factor", help="Factor for the mean correlation peak MAD threshold",
