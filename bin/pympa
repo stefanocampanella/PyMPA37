@@ -8,7 +8,6 @@ from datetime import datetime
 from time import perf_counter as timer
 
 from tqdm import tqdm
-from psutil import cpu_count
 import pandas as pd
 
 from pympa.pympa import read_templates, read_continuous_stream, correlation_detector
@@ -34,7 +33,7 @@ parser.add_argument("--templates", help="Relative path to templates directory", 
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
 parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
 parser.add_argument("--loglevel", help="Log level", default='error')
-parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=cpu_count())
+parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=os.cpu_count())
 cli_args = parser.parse_args()
 
 logging.basicConfig(format='%(levelname)s: %(message)s',
