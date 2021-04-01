@@ -6,6 +6,7 @@ from functools import reduce
 from math import log10
 from pathlib import Path
 from concurrent.futures import Executor
+from typing import Tuple, Sequence, Mapping, List
 
 import bottleneck as bn
 import numpy as np
@@ -59,7 +60,7 @@ def read_templates(templates_dirpath: Path, travel_times_dirpath: Path, catalog_
             continue
 
 
-def range_templates(travel_times_dirpath: Path) -> tuple:
+def range_templates(travel_times_dirpath: Path) -> Tuple[int, Path]:
     file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
     for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
         match = re.match(file_regex, travel_times_filepath.name)
@@ -67,7 +68,7 @@ def range_templates(travel_times_dirpath: Path) -> tuple:
         yield template_number, travel_times_filepath
 
 
-def read_travel_times(filepath: Path, max_channels: int) -> dict:
+def read_travel_times(filepath: Path, max_channels: int) -> Mapping[str, float]:
     travel_times = {}
     logging.debug(f"Reading {filepath}")
     with open(filepath, "r") as file:
@@ -98,9 +99,9 @@ def read_template_stream(dir_path: Path, template_number: int, channel_list, exe
     return reduce(lambda a, b: a + b if b else a, executor.map(reader, channel_list), Stream())
 
 
-def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: dict,
-                         template_magnitude: float, threshold_factor: float,
-                         tolerance: int, executor: Executor, correlations_std_bounds=(0.25, 1.5)):
+def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: Mapping[str, float],
+                         template_magnitude: float, threshold_factor: float, tolerance: int,
+                         executor: Executor, correlations_std_bounds: Tuple[float, float] = (0.25, 1.5)):
     events_list = []
     correlation_stream = correlate_streams(template_stream, continuous_stream, executor,
                                            std_bounds=correlations_std_bounds)
@@ -127,7 +128,8 @@ def correlation_detector(template_stream: Stream, continuous_stream: Stream, tra
     return events_list
 
 
-def correlate_streams(template_stream: Stream, continuous_stream: Stream, executor: Executor, std_bounds=(0.25, 1.5)):
+def correlate_streams(template_stream: Stream, continuous_stream: Stream, executor: Executor,
+                      std_bounds: Tuple[float, float] = (0.25, 1.5)) -> Stream:
     correlation_stream = Stream(traces=executor.map(lambda pair: correlate_template(pair.continuous.data,
                                                                                     pair.template.data,
                                                                                     pair.continuous.stats),
@@ -141,7 +143,8 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
     return correlation_stream
 
 
-def zip_streams(template: Stream, continuous: Stream, pairtype=namedtuple('TracePair', 'template continuous')):
+def zip_streams(template: Stream, continuous: Stream,
+                pairtype=namedtuple('TracePair', 'template continuous')) -> Sequence[Tuple[Trace, Trace]]:
     for master_trace in template:
         if selection := continuous.select(id=master_trace.id):
             slave_trace, = selection
@@ -166,7 +169,7 @@ def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trac
     return Trace(data=cross_correlation, header=header)
 
 
-def stack(stream: Stream, travel_times: dict, executor) -> Stream:
+def stack(stream: Stream, travel_times: Mapping[str, float], executor: Executor) -> Stream:
     def align(trace: Trace):
         trace_copy = trace.copy()
         starttime = trace_copy.stats.starttime + travel_times[trace_copy.id]
@@ -177,7 +180,8 @@ def stack(stream: Stream, travel_times: dict, executor) -> Stream:
     return Stream(traces=executor.map(align, stream))
 
 
-def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int, executor: Executor):
+def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int,
+                    executor: Executor) -> List[Tuple[str, float, int]]:
     def fixer(trace: Trace):
         lower = max(trigger_sample - tolerance, 0)
         upper = min(trigger_sample + tolerance + 1, len(trace.data))
