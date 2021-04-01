@@ -17,23 +17,17 @@ from scipy.signal import find_peaks
 
 def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Executor,
                            freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
-    begin = UTCDateTime(day)
     logging.info(f"Reading continuous data from {dir_path}")
 
     def reader(filepath: Path):
+        begin = UTCDateTime(day)
         try:
             logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
                 if stream := read(file, dtype=np.float32):
                     trace, = stream
-                    trace.filter("bandpass",
-                                 freqmin=freqmin,
-                                 freqmax=freqmax,
-                                 zerophase=True)
-                    trace.trim(starttime=begin,
-                               endtime=begin + datetime.timedelta(days=1),
-                               pad=True,
-                               fill_value=0)
+                    trace.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
+                    trace.trim(starttime=begin, endtime=begin + datetime.timedelta(days=1), pad=True, fill_value=0)
                     return trace
                 else:
                     logging.warning(f"Empty stream found while reading {filepath}")
@@ -139,8 +133,7 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
     correlation_stream = Stream(traces=executor.map(lambda pair: correlate_template(pair.continuous.data,
                                                                                     pair.template.data,
                                                                                     pair.continuous.stats),
-                                                    zip_streams(template_stream, continuous_stream,
-                                                                namedtuple('StreamPair', 'template continuous'))))
+                                                    zip_streams(template_stream, continuous_stream)))
     stds = np.fromiter(executor.map(lambda trace: bn.nanstd(np.abs(trace.data)), correlation_stream), dtype=float)
     relative_stds = stds / bn.nanmean(stds)
     for std, tr in zip(relative_stds, correlation_stream):
@@ -150,11 +143,13 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
     return correlation_stream
 
 
-def zip_streams(master: Stream, slave: Stream, pairtype=namedtuple('Pair', 'first second')):
-    for master_trace in master:
-        if selection := slave.select(id=master_trace.id):
+def zip_streams(template: Stream, continuous: Stream, pairtype=namedtuple('TracePair', 'template continuous')):
+    for master_trace in template:
+        if selection := continuous.select(id=master_trace.id):
             slave_trace, = selection
             yield pairtype(master_trace, slave_trace)
+        else:
+            logging.debug(f"Trace {master_trace.id} not found in continuous data")
 
 
 def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trace:
@@ -169,8 +164,7 @@ def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trac
     np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
     cross_correlation[~mask] = 0
     header = {"network": stats.network, "station": stats.station, "channel": stats.channel,
-              "starttime": stats.starttime,
-              "sampling_rate": stats.sampling_rate}
+              "starttime": stats.starttime, "sampling_rate": stats.sampling_rate}
     return Trace(data=cross_correlation, header=header)
 
 
@@ -210,9 +204,7 @@ def magnitude(continuous_stream: Stream, template_stream: Stream, trigger_time: 
         return event_magnitude
 
     channel_magnitudes = np.fromiter(executor.map(lambda pair: channel_magnitude(pair.continuous, pair.template),
-                                                  zip_streams(template_stream, continuous_stream,
-                                                              namedtuple('TracePair', 'template continuous'))),
-                                     dtype=float)
+                                                  zip_streams(template_stream, continuous_stream)), dtype=float)
     absolute_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
     valid_channel_magnitudes = channel_magnitudes[absolute_deviations < mad_threshold * bn.median(absolute_deviations)]
     return bn.nanmean(valid_channel_magnitudes)
