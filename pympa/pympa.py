@@ -16,8 +16,14 @@ from obspy.core import Stats
 from scipy.signal import find_peaks
 
 
-def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Executor,
-                           freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
+ChLag = Tuple[str, float, int]
+Event = Tuple[UTCDateTime, float, float, float, float, List[ChLag]]
+
+TracePair = namedtuple('TracePair', 'template continuous')
+
+
+def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Executor, freqmin: float = 3.0,
+                           freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {dir_path}")
 
     def reader(filepath: Path):
@@ -100,8 +106,8 @@ def read_template_stream(dir_path: Path, template_number: int, channel_list, exe
 
 
 def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: Mapping[str, float],
-                         template_magnitude: float, threshold_factor: float, tolerance: int,
-                         executor: Executor, correlations_std_bounds: Tuple[float, float] = (0.25, 1.5)):
+                         template_magnitude: float, threshold_factor: float, tolerance: int, executor: Executor,
+                         correlations_std_bounds: Tuple[float, float] = (0.25, 1.5)) -> List[Event]:
     events_list = []
     correlation_stream = correlate_streams(template_stream, continuous_stream, executor,
                                            std_bounds=correlations_std_bounds)
@@ -143,12 +149,11 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
     return correlation_stream
 
 
-def zip_streams(template: Stream, continuous: Stream,
-                pairtype=namedtuple('TracePair', 'template continuous')) -> Sequence[Tuple[Trace, Trace]]:
+def zip_streams(template: Stream, continuous: Stream) -> Sequence[Tuple[Trace, Trace]]:
     for master_trace in template:
         if selection := continuous.select(id=master_trace.id):
             slave_trace, = selection
-            yield pairtype(master_trace, slave_trace)
+            yield TracePair(master_trace, slave_trace)
         else:
             logging.debug(f"Trace {master_trace.id} not found in continuous data")
 
@@ -180,8 +185,7 @@ def stack(stream: Stream, travel_times: Mapping[str, float], executor: Executor)
     return Stream(traces=executor.map(align, stream))
 
 
-def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int,
-                    executor: Executor) -> List[Tuple[str, float, int]]:
+def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int, executor: Executor) -> List[ChLag]:
     def fixer(trace: Trace):
         lower = max(trigger_sample - tolerance, 0)
         upper = min(trigger_sample + tolerance + 1, len(trace.data))
