@@ -29,7 +29,7 @@ parser.add_argument("--cc_filter_num_channels", help="Minimum number of channels
                     type=int, default=6)
 parser.add_argument("--cc_filter_threshold", help="Correlation threshold per channels", type=float, default=0.35)
 parser.add_argument("--sample_tolerance", help="Maximum lag in samples", type=int, default=6)
-parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='travel_times')
+parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='ttimes')
 parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
 parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')

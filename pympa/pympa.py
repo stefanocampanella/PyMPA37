@@ -78,11 +78,9 @@ def read_travel_times(filepath: Path, max_channels: int) -> dict:
             value = float(value)
             travel_times[trace_id] = value
         if len(travel_times) > max_channels:
-            channels_to_remove = [name
-                                  for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                                  if n >= max_channels]
-            for channel in channels_to_remove:
-                del travel_times[channel]
+            for n, trace_id in enumerate(list(travel_times)):
+                if n > max_channels:
+                    del travel_times[trace_id]
     return travel_times
 
 
