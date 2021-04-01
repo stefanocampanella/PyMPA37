@@ -73,34 +73,34 @@ def range_templates(travel_times_dirpath: Path) -> tuple:
         yield template_number, travel_times_filepath
 
 
-def read_travel_times(filepath: Path, num_channels_max: int) -> dict:
+def read_travel_times(filepath: Path, max_channels: int) -> dict:
     travel_times = {}
     logging.debug(f"Reading {filepath}")
     with open(filepath, "r") as file:
         while line := file.readline():
             key, value = line.split(' ')
-            key = tuple(key.split('.'))
+            network, station, channel = key.split('.')
+            trace_id = f"{network}.{station}..{channel}"
             value = float(value)
-            travel_times[key] = value
-        if len(travel_times) > num_channels_max:
+            travel_times[trace_id] = value
+        if len(travel_times) > max_channels:
             channels_to_remove = [name
                                   for n, name in enumerate(sorted(travel_times, key=lambda x: travel_times[x]))
-                                  if n >= num_channels_max]
+                                  if n >= max_channels]
             for channel in channels_to_remove:
                 del travel_times[channel]
     return travel_times
 
 
 def read_template_stream(dir_path: Path, template_number: int, channel_list, executor: Executor) -> Stream:
-    def reader(key):
-        network, station, channel = key
+    def reader(trace_id):
         try:
-            filepath = dir_path / f"{template_number}.{network}.{station}..{channel}.mseed"
+            filepath = dir_path / f"{template_number}.{trace_id}.mseed"
             logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
                 return read(file, dtype=np.float32)
         except OSError as err:
-            logging.warning(f"{err} occurred while reading template {network}.{station}..{channel}")
+            logging.warning(f"{err} occurred while reading template {trace_id}")
             return None
 
     return reduce(lambda a, b: a + b if b else a, executor.map(reader, channel_list), Stream())
@@ -119,10 +119,7 @@ def correlation_detector(template_stream: Stream, continuous_stream: Stream, tra
     peaks, properties = find_peaks(mean_correlation, height=threshold)
     starttime = min(trace.stats.starttime for trace in stacked_stream)
     delta = stacked_stream[0].stats.delta
-    reference_time = min(travel_times[(trace.stats.network,
-                                       trace.stats.station,
-                                       trace.stats.channel)]
-                         for trace in correlation_stream)
+    reference_time = min(travel_times[trace.id] for trace in correlation_stream)
     for peak, peak_height in zip(peaks, properties['peak_heights']):
         channels = fix_correlation(stacked_stream,
                                    peak,
@@ -155,8 +152,7 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
 
 def zip_streams(master: Stream, slave: Stream, pairtype=namedtuple('Pair', 'first second')):
     for master_trace in master:
-        stats = master_trace.stats
-        if selection := slave.select(network=stats.network, station=stats.station, channel=stats.channel):
+        if selection := slave.select(id=master_trace.id):
             slave_trace, = selection
             yield pairtype(master_trace, slave_trace)
 
@@ -181,8 +177,7 @@ def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trac
 def stack(stream: Stream, travel_times: dict, executor) -> Stream:
     def align(trace: Trace):
         trace_copy = trace.copy()
-        key = trace_copy.stats.network, trace_copy.stats.station, trace_copy.stats.channel
-        starttime = trace_copy.stats.starttime + travel_times[key]
+        starttime = trace_copy.stats.starttime + travel_times[trace_copy.id]
         endtime = starttime + datetime.timedelta(days=1)
         trace_copy.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
         return trace_copy
@@ -191,14 +186,12 @@ def stack(stream: Stream, travel_times: dict, executor) -> Stream:
 
 
 def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int, executor: Executor):
-    def fixer(correlation_trace: Trace):
+    def fixer(trace: Trace):
         lower = max(trigger_sample - tolerance, 0)
-        upper = min(trigger_sample + tolerance + 1, len(correlation_trace.data))
-        stats = correlation_trace.stats
-        name = stats.network + "." + stats.station + ".." + stats.channel
-        sample_shift = bn.nanargmax(correlation_trace.data[lower:upper]) - tolerance
-        correlation_trace = correlation_trace.data[trigger_sample + sample_shift]
-        return name, correlation_trace, sample_shift
+        upper = min(trigger_sample + tolerance + 1, len(trace.data))
+        sample_shift = bn.nanargmax(trace.data[lower:upper]) - tolerance
+        correlation = trace.data[trigger_sample + sample_shift]
+        return trace.id, correlation, sample_shift
 
     return list(executor.map(fixer, stacked_stream))
 

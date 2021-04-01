@@ -56,6 +56,7 @@ if __name__ == '__main__':
                          total=len(os.listdir(cli_args.root / cli_args.travel_times)),
                          disable=None)
         events = []
+
         for template_number, template_stream, travel_times, template_magnitude in templates:
             try:
                 detections = correlation_detector(template_stream,
