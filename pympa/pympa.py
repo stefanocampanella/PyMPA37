@@ -16,8 +16,8 @@ from obspy.core import Stats
 from scipy.signal import find_peaks
 
 
-ChLag = Tuple[str, float, int]
-Event = Tuple[UTCDateTime, float, float, float, float, List[ChLag]]
+CorrelationFix = Tuple[str, float, int]
+Event = Tuple[UTCDateTime, float, float, float, float, List[CorrelationFix]]
 
 TracePair = namedtuple('TracePair', 'template continuous')
 
@@ -185,7 +185,8 @@ def stack(stream: Stream, travel_times: Mapping[str, float], executor: Executor)
     return Stream(traces=executor.map(align, stream))
 
 
-def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int, executor: Executor) -> List[ChLag]:
+def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int,
+                    executor: Executor) -> List[CorrelationFix]:
     def fixer(trace: Trace):
         lower = max(trigger_sample - tolerance, 0)
         upper = min(trigger_sample + tolerance + 1, len(trace.data))
