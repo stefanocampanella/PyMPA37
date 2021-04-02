@@ -85,8 +85,9 @@ def read_travel_times(filepath: Path, max_channels: int) -> Mapping[str, float]:
             value = float(value)
             travel_times[trace_id] = value
         if len(travel_times) > max_channels:
-            for n, trace_id in enumerate(list(travel_times)):
-                if n > max_channels:
+            keys = list(sorted(travel_times, key=lambda trace_id: travel_times[trace_id]))
+            for n, trace_id in enumerate(keys):
+                if n >= max_channels:
                     del travel_times[trace_id]
     return travel_times
 
