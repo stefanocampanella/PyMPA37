@@ -2,11 +2,11 @@ import datetime
 import logging
 import re
 from collections import namedtuple
+from concurrent.futures import Executor
 from functools import reduce
 from math import log10
 from pathlib import Path
-from concurrent.futures import Executor
-from typing import Tuple, Sequence, Mapping, List
+from typing import Tuple, Dict, List, Generator
 
 import bottleneck as bn
 import numpy as np
@@ -15,16 +15,16 @@ from obspy import read, Stream, Trace, UTCDateTime
 from obspy.core import Stats
 from scipy.signal import find_peaks
 
-
+TemplateReadTuple = Tuple[int, Stream, Dict[str, int], float]
 CorrelationFix = Tuple[str, float, int]
 Event = Tuple[UTCDateTime, float, float, float, float, List[CorrelationFix]]
 
 TracePair = namedtuple('TracePair', 'template continuous')
 
 
-def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Executor, freqmin: float = 3.0,
+def read_continuous_stream(directory: Path, day: datetime.datetime, executor: Executor, freqmin: float = 3.0,
                            freqmax: float = 8.0) -> Stream:
-    logging.info(f"Reading continuous data from {dir_path}")
+    logging.info(f"Reading continuous data from {directory}")
 
     def reader(filepath: Path):
         begin = UTCDateTime(day)
@@ -44,19 +44,19 @@ def read_continuous_stream(dir_path: Path, day: datetime.datetime, executor: Exe
             return None
 
     return reduce(lambda a, b: a + b if b else a,
-                  executor.map(reader, dir_path.glob(f"{day.strftime('%y%m%d')}*")), Stream())
+                  executor.map(reader, directory.glob(f"{day.strftime('%y%m%d')}*")), Stream())
 
 
-def read_templates(templates_dirpath: Path, travel_times_dirpath: Path, catalog_filepath: Path, num_channels_max: int,
-                   executor: Executor) -> Sequence[Tuple[int, Stream, Mapping[str, int], float]]:
+def read_templates(templates_directory: Path, travel_times_directory: Path, catalog_filepath: Path,
+                   num_channels_max: int, executor: Executor) -> Generator[TemplateReadTuple, None, None]:
     logging.info(f"Reading catalog from {catalog_filepath}")
     template_magnitudes = pd.read_csv(catalog_filepath, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
-    logging.info(f"Reading travel times from {travel_times_dirpath}")
-    logging.info(f"Reading templates from {templates_dirpath}")
-    for template_number, travel_times_filepath in range_templates(travel_times_dirpath):
+    logging.info(f"Reading travel times from {travel_times_directory}")
+    logging.info(f"Reading templates from {templates_directory}")
+    for template_number, travel_times_filepath in range_templates(travel_times_directory):
         try:
             travel_times = read_travel_times(travel_times_filepath, num_channels_max)
-            template_stream = read_template_stream(templates_dirpath,
+            template_stream = read_template_stream(templates_directory,
                                                    template_number,
                                                    travel_times.keys(),
                                                    executor)
@@ -66,36 +66,37 @@ def read_templates(templates_dirpath: Path, travel_times_dirpath: Path, catalog_
             continue
 
 
-def range_templates(travel_times_dirpath: Path) -> Tuple[int, Path]:
+def range_templates(travel_times_directory: Path) -> Generator[Tuple[int, Path], None, None]:
     file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
-    for travel_times_filepath in travel_times_dirpath.glob('*.ttimes'):
-        match = re.match(file_regex, travel_times_filepath.name)
-        template_number = int(match['template_number'])
-        yield template_number, travel_times_filepath
+    for filepath in travel_times_directory.glob('*.ttimes'):
+        match = file_regex.match(filepath.name)
+        if match:
+            template_number = int(match.group('template_number'))
+            yield template_number, filepath
 
 
-def read_travel_times(filepath: Path, max_channels: int) -> Mapping[str, float]:
+def read_travel_times(filepath: Path, max_channels: int) -> Dict[str, float]:
     travel_times = {}
     logging.debug(f"Reading {filepath}")
     with open(filepath, "r") as file:
         while line := file.readline():
-            key, value = line.split(' ')
+            key, value_string = line.split(' ')
             network, station, channel = key.split('.')
             trace_id = f"{network}.{station}..{channel}"
-            value = float(value)
+            value = float(value_string)
             travel_times[trace_id] = value
         if len(travel_times) > max_channels:
-            keys = list(sorted(travel_times, key=lambda trace_id: travel_times[trace_id]))
-            for n, trace_id in enumerate(keys):
+            sorted_ids = list(sorted(travel_times, key=lambda trace: travel_times[trace]))
+            for n, trace_id in enumerate(sorted_ids):
                 if n >= max_channels:
                     del travel_times[trace_id]
     return travel_times
 
 
-def read_template_stream(dir_path: Path, template_number: int, channel_list, executor: Executor) -> Stream:
+def read_template_stream(directory: Path, template_number: int, channel_list, executor: Executor) -> Stream:
     def reader(trace_id):
         try:
-            filepath = dir_path / f"{template_number}.{trace_id}.mseed"
+            filepath = directory / f"{template_number}.{trace_id}.mseed"
             logging.debug(f"Reading {filepath}")
             with filepath.open('rb') as file:
                 return read(file, dtype=np.float32)
@@ -106,7 +107,7 @@ def read_template_stream(dir_path: Path, template_number: int, channel_list, exe
     return reduce(lambda a, b: a + b if b else a, executor.map(reader, channel_list), Stream())
 
 
-def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: Mapping[str, float],
+def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: Dict[str, float],
                          template_magnitude: float, threshold_factor: float, tolerance: int, executor: Executor,
                          correlations_std_bounds: Tuple[float, float] = (0.25, 1.5)) -> List[Event]:
     events_list = []
@@ -150,7 +151,7 @@ def correlate_streams(template_stream: Stream, continuous_stream: Stream, execut
     return correlation_stream
 
 
-def zip_streams(template: Stream, continuous: Stream) -> Sequence[Tuple[Trace, Trace]]:
+def zip_streams(template: Stream, continuous: Stream) -> Generator[Tuple[Trace, Trace], None, None]:
     for master_trace in template:
         if selection := continuous.select(id=master_trace.id):
             slave_trace, = selection
@@ -159,7 +160,7 @@ def zip_streams(template: Stream, continuous: Stream) -> Sequence[Tuple[Trace, T
             logging.debug(f"Trace {master_trace.id} not found in continuous data")
 
 
-def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trace:
+def correlate_template(data: np.ndarray, template: np.ndarray, stats: Stats) -> Trace:
     template = template - bn.nanmean(template)
     template_length = len(template)
     cross_correlation = np.correlate(data, template, mode='valid')
@@ -175,7 +176,7 @@ def correlate_template(data: np.array, template: np.array, stats: Stats) -> Trac
     return Trace(data=cross_correlation, header=header)
 
 
-def stack(stream: Stream, travel_times: Mapping[str, float], executor: Executor) -> Stream:
+def stack(stream: Stream, travel_times: Dict[str, float], executor: Executor) -> Stream:
     def align(trace: Trace):
         trace_copy = trace.copy()
         starttime = trace_copy.stats.starttime + travel_times[trace_copy.id]
