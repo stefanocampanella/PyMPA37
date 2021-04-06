@@ -1,9 +1,9 @@
 import datetime
 import logging
 import re
-from collections import namedtuple
 from concurrent.futures import Executor
 from functools import reduce
+from itertools import repeat
 from math import log10
 from pathlib import Path
 from typing import Tuple, Dict, List, Generator
@@ -17,8 +17,6 @@ from scipy.signal import find_peaks
 TemplateReadTuple = Tuple[int, Stream, Dict[str, int], float]
 CorrelationFix = Tuple[str, float, int]
 Event = Tuple[UTCDateTime, float, float, float, float, List[CorrelationFix]]
-
-TracePair = namedtuple('TracePair', 'template continuous')
 
 
 def read_continuous_stream(directory: Path, day: datetime.datetime, executor: Executor, freqmin: float = 3.0,
@@ -109,50 +107,53 @@ def read_template_stream(directory: Path, template_number: int, channel_list, ex
 
 def correlation_detector(template_stream: Stream, continuous_stream: Stream, travel_times: Dict[str, float],
                          template_magnitude: float, threshold_factor: float, tolerance: int, executor: Executor,
-                         correlations_std_bounds: Tuple[float, float] = (0.25, 1.5)) -> List[Event]:
+                         correlations_std_bounds: Tuple[float, float] = (0.25, 1.5),
+                         magnitude_threshold: float = 2.0) -> List[Event]:
     events_list: List[Event] = []
-    correlation_stream = correlate_streams(template_stream, continuous_stream, executor,
-                                           std_bounds=correlations_std_bounds)
-    stacked_stream = stack(correlation_stream, travel_times, executor)
+    correlation_stream = Stream(traces=executor.map(correlate_traces,
+                                                    sort_stream(continuous_stream, template_stream),
+                                                    template_stream))
+    stds = np.fromiter(executor.map(lambda trace: bn.nanstd(np.abs(trace.data)), correlation_stream), dtype=float)
+    relative_stds = stds / bn.nanmean(stds)
+    for std, trace in zip(relative_stds, correlation_stream):
+        if std < correlations_std_bounds[0] or std > correlations_std_bounds[1]:
+            correlation_stream.remove(trace)
+            logging.debug(f"Removed trace {trace} with std {std} from correlation stream")
+    stacked_stream = Stream(traces=executor.map(align, correlation_stream,
+                                                [travel_times[trace.id] for trace in correlation_stream]))
     mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
     peaks, properties = find_peaks(mean_correlation, height=threshold)
-    starttime = min(trace.stats.starttime for trace in stacked_stream)
-    delta = stacked_stream[0].stats.delta
-    reference_time = min(travel_times[trace.id] for trace in correlation_stream)
+    stack_zero = min(trace.stats.starttime for trace in stacked_stream)
+    stack_delta = stacked_stream[0].stats.delta
+    travel_zero = min(travel_times[trace.id] for trace in correlation_stream)
+    template_zero = min(trace.stats.starttime for trace in template_stream)
     for peak, peak_height in zip(peaks, properties['peak_heights']):
-        channels = fix_correlation(stacked_stream, peak, tolerance, executor)
-        trigger_time = starttime + peak * delta
-        event_magnitude = magnitude(continuous_stream, template_stream, trigger_time, template_magnitude, executor)
-        event_date = trigger_time + reference_time
+        channels = list(executor.map(fix_correlation, stacked_stream, repeat(peak), repeat(tolerance)))
+        trigger_time = stack_zero + peak * stack_delta
+        channel_magnitudes = np.fromiter(executor.map(magnitude, template_stream, repeat(template_magnitude),
+                                                      sort_stream(continuous_stream, template_stream),
+                                                      repeat(trigger_time - template_zero)),
+                                         dtype=float)
+        magnitude_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
+        magnitude_mad = bn.median(magnitude_deviations)
+        valid_magnitudes = channel_magnitudes[magnitude_deviations < magnitude_threshold * magnitude_mad]
+        event_magnitude = bn.nanmean(valid_magnitudes)
+        event_date = trigger_time + travel_zero
         event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
-        record = (event_date, event_magnitude, event_correlation,
-                  peak_height, correlation_dmad, channels)
+        record = (event_date, event_magnitude, event_correlation, peak_height, correlation_dmad, channels)
         events_list.append(record)
     return events_list
 
 
-def correlate_streams(template_stream: Stream, continuous_stream: Stream, executor: Executor,
-                      std_bounds: Tuple[float, float] = (0.25, 1.5)) -> Stream:
-
-    correlation_stream = Stream(traces=executor.map(correlate_traces, zip_streams(template_stream, continuous_stream)))
-    stds = np.fromiter(executor.map(lambda trace: bn.nanstd(np.abs(trace.data)), correlation_stream), dtype=float)
-    relative_stds = stds / bn.nanmean(stds)
-    for std, tr in zip(relative_stds, correlation_stream):
-        if std < std_bounds[0] or std > std_bounds[1]:
-            correlation_stream.remove(tr)
-            logging.debug(f"Removed trace {tr} with std {std} from correlation stream")
-    return correlation_stream
-
-
-def correlate_traces(pair: TracePair):
-    header = {"network": pair.continuous.stats.network,
-              "station": pair.continuous.stats.station,
-              "channel": pair.continuous.stats.channel,
-              "starttime": pair.continuous.stats.starttime,
-              "sampling_rate": pair.continuous.stats.sampling_rate}
-    return Trace(data=correlate_data(pair.continuous.data, pair.template.data), header=header)
+def correlate_traces(continuous: Stream, template: Stream):
+    header = {"network": continuous.stats.network,
+              "station": continuous.stats.station,
+              "channel": continuous.stats.channel,
+              "starttime": continuous.stats.starttime,
+              "sampling_rate": continuous.stats.sampling_rate}
+    return Trace(data=correlate_data(continuous.data, template.data), header=header)
 
 
 def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
@@ -169,53 +170,35 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
     return cross_correlation
 
 
-def zip_streams(template: Stream, continuous: Stream) -> Generator[Tuple[Trace, Trace], None, None]:
-    for master_trace in template:
-        if selection := continuous.select(id=master_trace.id):
-            slave_trace, = selection
-            yield TracePair(master_trace, slave_trace)
-        else:
-            logging.debug(f"Trace {master_trace.id} not found in continuous data")
+def sort_stream(stream: Stream, key: Stream) -> Generator[Trace, None, None]:
+    for trace in key:
+        if selection_stream := stream.select(id=trace.id):
+            selection, = selection_stream
+            yield selection
 
 
-def stack(stream: Stream, travel_times: Dict[str, float], executor: Executor) -> Stream:
-    def align(trace: Trace):
-        trace_copy = trace.copy()
-        starttime = trace_copy.stats.starttime + travel_times[trace_copy.id]
-        endtime = starttime + datetime.timedelta(days=1)
-        trace_copy.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
-        return trace_copy
-
-    return Stream(traces=executor.map(align, stream))
+def align(trace: Trace, delay: float):
+    trace_copy = trace.copy()
+    starttime = trace_copy.stats.starttime + delay
+    endtime = starttime + datetime.timedelta(days=1)
+    trace_copy.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
+    return trace_copy
 
 
-def fix_correlation(stacked_stream: Stream, trigger_sample: int, tolerance: int,
-                    executor: Executor) -> List[CorrelationFix]:
-    def fixer(trace: Trace):
-        lower = max(trigger_sample - tolerance, 0)
-        upper = min(trigger_sample + tolerance + 1, len(trace.data))
-        sample_shift = bn.nanargmax(trace.data[lower:upper]) - tolerance
-        correlation = trace.data[trigger_sample + sample_shift]
-        return trace.id, correlation, sample_shift
-
-    return list(executor.map(fixer, stacked_stream))
+def fix_correlation(trace: Trace, trigger_sample: int, tolerance: int) -> CorrelationFix:
+    lower = max(trigger_sample - tolerance, 0)
+    upper = min(trigger_sample + tolerance + 1, len(trace.data))
+    sample_shift = bn.nanargmax(trace.data[lower:upper]) - tolerance
+    correlation = trace.data[trigger_sample + sample_shift]
+    return trace.id, correlation, sample_shift
 
 
-def magnitude(continuous_stream: Stream, template_stream: Stream, trigger_time: UTCDateTime, template_magnitude: float,
-              executor: Executor, mad_threshold: float = 2.0) -> float:
-    delta = trigger_time - min(tr.stats.starttime for tr in template_stream)
-
-    def channel_magnitude(continuous_trace: Trace, template_trace: Trace) -> float:
-        starttime = template_trace.stats.starttime + delta
-        endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
-        continuous_trace_view = continuous_trace.slice(starttime=starttime, endtime=endtime)
-        continuous_absolute_max = bn.nanmax(np.abs(continuous_trace_view.data))
-        template_absolute_max = bn.nanmax(np.abs(template_trace.data))
-        event_magnitude = template_magnitude - log10(template_absolute_max / continuous_absolute_max)
-        return event_magnitude
-
-    channel_magnitudes = np.fromiter(executor.map(lambda pair: channel_magnitude(pair.continuous, pair.template),
-                                                  zip_streams(template_stream, continuous_stream)), dtype=float)
-    absolute_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
-    valid_channel_magnitudes = channel_magnitudes[absolute_deviations < mad_threshold * bn.median(absolute_deviations)]
-    return bn.nanmean(valid_channel_magnitudes)
+def magnitude(template_trace: Trace, template_magnitude: float, continuous_trace: Trace,
+              delta: datetime.timedelta) -> float:
+    starttime = template_trace.stats.starttime + delta
+    endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
+    continuous_trace_view = continuous_trace.slice(starttime=starttime, endtime=endtime)
+    continuous_absolute_max = bn.nanmax(np.abs(continuous_trace_view.data))
+    template_absolute_max = bn.nanmax(np.abs(template_trace.data))
+    event_magnitude = template_magnitude - log10(template_absolute_max / continuous_absolute_max)
+    return event_magnitude
