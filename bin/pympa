@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from tqdm import tqdm
 
-from pympa.pympa import read_templates, read_continuous_stream, correlation_detector, save_records
+from pympa.pympa import read_templates, read_data, correlation_detector, save_records
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
@@ -52,9 +52,9 @@ else:
 
 if __name__ == '__main__':
     tic = timer()
-    data = read_continuous_stream(cli_args.root / cli_args.continuous,
-                                  freqmin=cli_args.lowpass_freq,
-                                  freqmax=cli_args.highpass_freq)
+    data = read_data(cli_args.root / cli_args.continuous,
+                     freqmin=cli_args.lowpass_freq,
+                     freqmax=cli_args.highpass_freq)
     templates = tqdm(read_templates(cli_args.root / cli_args.templates,
                                     cli_args.root / cli_args.travel_times,
                                     cli_args.root / cli_args.catalog),
@@ -62,9 +62,9 @@ if __name__ == '__main__':
                      disable=None)
     with MaybePool as pool:
         events = []
-        for template_number, template_stream, travel_times, template_magnitude in templates:
+        for template_number, template, travel_times, template_magnitude in templates:
             try:
-                detections = correlation_detector(template_stream, data, travel_times, template_magnitude,
+                detections = correlation_detector(template, data, travel_times, template_magnitude,
                                                   max_channels=cli_args.max_channels,
                                                   cc_min_std_factor=cli_args.cc_min_std_factor,
                                                   cc_max_std_factor=cli_args.cc_max_std_factor,

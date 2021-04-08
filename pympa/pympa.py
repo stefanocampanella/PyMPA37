@@ -17,7 +17,7 @@ CorrelationFix = Tuple[str, float, int]
 Event = Tuple[int, datetime.datetime, float, float, float, float, int]
 
 
-def read_continuous_stream(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
+def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {path}")
     with path.open('rb') as file:
         data = read(file)
@@ -75,18 +75,9 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
                          cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5,
                          mapf: Callable = map) -> Generator[Event, None, None]:
     continuous, template, travel_times = sieve_and_sort(data, template, travel_times, max_channels)
-    correlation = Stream(traces=mapf(correlate_traces, continuous, template))
-    correlation_stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlation), dtype=float)
-    mean_std = bn.nanmean(correlation_stds)
-    for std, xcor_trace, cont_trace, temp_trace, trace_id in zip(correlation_stds, correlation, continuous,
-                                                                 list(template)):
-        if not cc_min_std_factor < std / mean_std < cc_max_std_factor:
-            logging.debug(f"Ignored trace {xcor_trace} with std {std} (mean: {mean_std})")
-            correlation.remove(xcor_trace)
-            continuous.remove(cont_trace)
-            template.remove(temp_trace)
-            del travel_times[trace_id]
-    stacked_stream = Stream(traces=mapf(align, correlation, travel_times.values()))
+    correlations = Stream(traces=mapf(correlate_traces, continuous, template))
+    quality_check(correlations, continuous, template, travel_times, cc_min_std_factor, cc_max_std_factor, mapf)
+    stacked_stream = Stream(traces=mapf(align, correlations, travel_times.values()))
     mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
@@ -110,7 +101,28 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
             logging.debug(f"Skipping detection at {event_date}: only {num_channels} channel(s) above threshold")
 
 
-def correlate_traces(continuous: Stream, template: Stream):
+def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float],
+                   max_channels: int) -> Tuple[Stream, Stream, Dict[str, float]]:
+    channels = sorted(set.intersection({trace.id for trace in data},
+                                       {trace.id for trace in template},
+                                       {trace_id for trace_id in travel_times}),
+                      key=lambda trace_id: travel_times[trace_id])[:max_channels]
+    logging.debug(f"Traces used: {', '.join(channels)}")
+    sieved_data = select_traces(data, channels)
+    sieved_template = select_traces(template, channels)
+    sieved_ttimes = {trace_id: travel_times[trace_id] for trace_id in channels}
+    return sieved_data, sieved_template, sieved_ttimes
+
+
+def select_traces(stream: Stream, channels: Iterable[str]) -> Stream:
+    new_stream = Stream()
+    for trace_id in channels:
+        trace, = stream.select(id=trace_id)
+        new_stream.append(trace)
+    return new_stream
+
+
+def correlate_traces(continuous: Trace, template: Trace):
     header = {"network": continuous.stats.network,
               "station": continuous.stats.station,
               "channel": continuous.stats.channel,
@@ -131,6 +143,19 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
     np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
     cross_correlation[~mask] = 0
     return cross_correlation
+
+
+def quality_check(correlations, continuous, template, travel_times, cc_min_std_factor, cc_max_std_factor, mapf):
+    correlation_stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlations), dtype=float)
+    mean_std = bn.nanmean(correlation_stds)
+    traces = zip(correlations, continuous, template, list(travel_times))
+    for std, (xcor_trace, cont_trace, temp_trace, trace_id) in zip(correlation_stds, traces):
+        if not cc_min_std_factor < std / mean_std < cc_max_std_factor:
+            logging.debug(f"Ignored trace {xcor_trace} with std {std} (mean: {mean_std})")
+            correlations.remove(xcor_trace)
+            continuous.remove(cont_trace)
+            template.remove(temp_trace)
+            del travel_times[trace_id]
 
 
 def align(trace: Trace, delay: float):
@@ -165,27 +190,6 @@ def estimate_magnitude(channel_magnitudes: np.ndarray, threshold_factor: float) 
     magnitude_mad = bn.median(magnitude_deviations)
     threshold = threshold_factor * magnitude_mad + np.finfo(magnitude_mad).eps
     return bn.nanmean(channel_magnitudes[magnitude_deviations < threshold])
-
-
-def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float],
-                   max_channels: int) -> Tuple[Stream, Stream, Dict[str, float]]:
-    channels = sorted(set.intersection({trace.id for trace in template},
-                                       {trace.id for trace in data},
-                                       {trace_id for trace_id in travel_times}),
-                      key=lambda trace_id: travel_times[trace_id])[:max_channels]
-    logging.debug(f"Traces used: {', '.join(channels)}")
-    sieved_data = select_traces(data, channels)
-    sieved_template = select_traces(template, channels)
-    sieved_ttimes = {trace_id: travel_times[trace_id] for trace_id in channels}
-    return sieved_data, sieved_template, sieved_ttimes
-
-
-def select_traces(stream: Stream, channels: Iterable[str]) -> Stream:
-    new_stream = Stream()
-    for trace_id in channels:
-        trace, = stream.select(id=trace_id)
-        new_stream.append(trace)
-    return new_stream
 
 
 def save_records(events: List[Event], output: Path) -> None:
