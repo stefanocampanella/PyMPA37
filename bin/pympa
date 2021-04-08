@@ -21,8 +21,10 @@ parser.add_argument("--max_channels", help="Maximum number of channels used for 
                     type=int, default=16)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
-parser.add_argument("--correlation_threshold_factor", help="Scale factor of mean correlation peak MAD threshold",
+parser.add_argument("--correlation_threshold_factor", help="Scale factor of mean correlation peak threshold",
                     type=float, default=8.0)
+parser.add_argument("--correlation_distance_factor", help="Scale factor of mean correlation peak distance",
+                    type=float, default=2.0)
 parser.add_argument("--magnitude_threshold_factor", help="Scale factor of channel magnitude MAD threshold", type=float,
                     default=2.0)
 parser.add_argument("--cc_min_std_factor", help="Scale factor of correlation std min threshold", type=float,
@@ -69,6 +71,7 @@ if __name__ == '__main__':
                                                   cc_min_std_factor=cli_args.cc_min_std_factor,
                                                   cc_max_std_factor=cli_args.cc_max_std_factor,
                                                   threshold_factor=cli_args.correlation_threshold_factor,
+                                                  distance_factor=cli_args.distance_factor,
                                                   tolerance=cli_args.sample_tolerance,
                                                   cc_threshold=cli_args.cc_filter_threshold,
                                                   min_channels=cli_args.cc_filter_num_channels,

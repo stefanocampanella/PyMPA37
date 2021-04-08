@@ -1,6 +1,7 @@
 import datetime
 import logging
 import re
+from collections import OrderedDict
 from itertools import repeat
 from math import log10
 from pathlib import Path
@@ -57,7 +58,7 @@ def range_templates(travel_times_directory: Path) -> Generator[Tuple[int, Path],
 
 
 def read_travel_times(filepath: Path) -> Dict[str, float]:
-    travel_times = {}
+    travel_times = OrderedDict()
     logging.debug(f"Reading {filepath}")
     with open(filepath, "r") as file:
         while line := file.readline():
@@ -70,18 +71,20 @@ def read_travel_times(filepath: Path) -> Dict[str, float]:
 
 
 def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str, float], template_magnitude: float,
-                         max_channels: int = 16, threshold_factor: float = 8.0, tolerance: int = 6,
-                         cc_threshold: float = 0.35, min_channels: int = 6, magnitude_threshold: float = 2.0,
-                         cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5,
-                         mapf: Callable = map) -> Generator[Event, None, None]:
+                         max_channels: int = 16, threshold_factor: float = 8.0, distance_factor: float = 2.0,
+                         tolerance: int = 6, cc_threshold: float = 0.35, min_channels: int = 6,
+                         magnitude_threshold: float = 2.0, cc_min_std_factor: float = 0.25,
+                         cc_max_std_factor: float = 1.5, mapf: Callable = map) -> Generator[Event, None, None]:
     continuous, template, travel_times = sieve_and_sort(data, template, travel_times, max_channels)
     correlations = Stream(traces=mapf(correlate_traces, continuous, template))
-    quality_check(correlations, continuous, template, travel_times, cc_min_std_factor, cc_max_std_factor, mapf)
+    quality_check(correlations, continuous, template, travel_times, cc_min_std_factor=cc_min_std_factor,
+                  cc_max_std_factor=cc_max_std_factor, mapf=mapf)
     stacked_stream = Stream(traces=mapf(align, correlations, travel_times.values()))
     mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
-    peaks, properties = find_peaks(mean_correlation, height=threshold)
+    distance = distance_factor * (template[0].stats.endtime - template[0].stats.starttime) / template[0].stats.delta
+    peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
     stack_zero = min(trace.stats.starttime for trace in stacked_stream)
     stack_delta = stacked_stream[0].stats.delta
     travel_zero = min(travel_times.values())
@@ -98,7 +101,8 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
             event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
             yield event_date.datetime, event_magnitude, event_correlation, peak_height, correlation_dmad, num_channels
         else:
-            logging.debug(f"Skipping detection at {event_date}: only {num_channels} channel(s) above threshold")
+            logging.debug(f"Skipping detection at {event_date} with peak {peak_height}: "
+                          f"only {num_channels} channel(s) above threshold")
 
 
 def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float],
@@ -110,7 +114,7 @@ def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float
     logging.debug(f"Traces used: {', '.join(channels)}")
     sieved_data = select_traces(data, channels)
     sieved_template = select_traces(template, channels)
-    sieved_ttimes = {trace_id: travel_times[trace_id] for trace_id in channels}
+    sieved_ttimes = OrderedDict([(trace_id, travel_times[trace_id]) for trace_id in channels])
     return sieved_data, sieved_template, sieved_ttimes
 
 
@@ -145,7 +149,8 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
     return cross_correlation
 
 
-def quality_check(correlations, continuous, template, travel_times, cc_min_std_factor, cc_max_std_factor, mapf):
+def quality_check(correlations: Stream, continuous: Stream, template: Stream, travel_times: Dict[str, float],
+                  cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5, mapf: Callable = map):
     correlation_stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlations), dtype=float)
     mean_std = bn.nanmean(correlation_stds)
     traces = zip(correlations, continuous, template, list(travel_times))
