@@ -3,7 +3,7 @@ import argparse
 import contextlib
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor as Pool
 from pathlib import Path
 from time import perf_counter as timer
 from types import SimpleNamespace
@@ -44,11 +44,11 @@ logging.basicConfig(format='%(levelname)s: %(message)s',
                     level=getattr(logging, cli_args.loglevel.upper()))
 
 if cli_args.num_threads < 0:
-    MaybePoolExecutor = contextlib.nullcontext(enter_result=SimpleNamespace(map=map))
+    MaybePool = contextlib.nullcontext(enter_result=SimpleNamespace(map=map))
 elif cli_args.num_threads == 0:
-    MaybePoolExecutor = ThreadPoolExecutor(max_workers=os.cpu_count())
+    MaybePool = Pool(max_workers=os.cpu_count())
 else:
-    MaybePoolExecutor = ThreadPoolExecutor(max_workers=cli_args.num_threads)
+    MaybePool = Pool(max_workers=cli_args.num_threads)
 
 if __name__ == '__main__':
     tic = timer()
@@ -60,7 +60,7 @@ if __name__ == '__main__':
                                     cli_args.root / cli_args.catalog),
                      total=len(os.listdir(cli_args.root / cli_args.travel_times)),
                      disable=None)
-    with MaybePoolExecutor as executor:
+    with MaybePool as pool:
         events = []
         for template_number, template_stream, travel_times, template_magnitude in templates:
             try:
@@ -73,7 +73,7 @@ if __name__ == '__main__':
                                                   cc_threshold=cli_args.cc_filter_threshold,
                                                   min_channels=cli_args.cc_filter_num_channels,
                                                   magnitude_threshold=cli_args.magnitude_threshold_factor,
-                                                  mapf=executor.map)
+                                                  mapf=pool.map)
                 events.extend((template_number,) + detection for detection in detections)
             except ValueError as error:
                 logging.warning(f"{error} occurred during processing of template {template_number}")

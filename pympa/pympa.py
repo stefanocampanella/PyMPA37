@@ -78,13 +78,14 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
     correlation = Stream(traces=mapf(correlate_traces, continuous, template))
     correlation_stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlation), dtype=float)
     mean_std = bn.nanmean(correlation_stds)
-    for std, xcor_trace, cont_trace, temp_trace in zip(correlation_stds, correlation, continuous, template):
+    for std, xcor_trace, cont_trace, temp_trace, trace_id in zip(correlation_stds, correlation, continuous,
+                                                                 list(template)):
         if not cc_min_std_factor < std / mean_std < cc_max_std_factor:
             logging.debug(f"Ignored trace {xcor_trace} with std {std} (mean: {mean_std})")
             correlation.remove(xcor_trace)
             continuous.remove(cont_trace)
             template.remove(temp_trace)
-            del travel_times[xcor_trace.id]
+            del travel_times[trace_id]
     stacked_stream = Stream(traces=mapf(align, correlation, travel_times.values()))
     mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
@@ -98,7 +99,7 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
         trigger_time = stack_zero + peak * stack_delta
         event_date = trigger_time + travel_zero
         channels = list(mapf(fix_correlation, stacked_stream, repeat(peak), repeat(tolerance)))
-        num_channels = sum(1 for _, cc, _ in channels if cc > cc_threshold)
+        num_channels = sum(1 for _, corr, _ in channels if corr > cc_threshold)
         if num_channels >= min_channels:
             channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), continuous,
                                                   repeat(trigger_time - template_zero)), dtype=float)
@@ -170,9 +171,9 @@ def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float
                    max_channels: int) -> Tuple[Stream, Stream, Dict[str, float]]:
     channels = sorted(set.intersection({trace.id for trace in template},
                                        {trace.id for trace in data},
-                                       {key for key in travel_times}),
+                                       {trace_id for trace_id in travel_times}),
                       key=lambda trace_id: travel_times[trace_id])[:max_channels]
-
+    logging.debug(f"Traces used: {', '.join(channels)}")
     sieved_data = select_traces(data, channels)
     sieved_template = select_traces(template, channels)
     sieved_ttimes = {trace_id: travel_times[trace_id] for trace_id in channels}
