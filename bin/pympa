@@ -1,29 +1,34 @@
 #! /usr/bin/env python
 import argparse
+import contextlib
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from datetime import datetime
 from time import perf_counter as timer
+from types import SimpleNamespace
 
 from tqdm import tqdm
-import pandas as pd
 
-from pympa.pympa import read_templates, read_continuous_stream, correlation_detector
+from pympa.pympa import read_templates, read_continuous_stream, correlation_detector, save_records
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
 parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
-parser.add_argument("date", help="Datetime begin", type=datetime.fromisoformat)
+parser.add_argument("continuous", help="Continuous data path", type=Path)
 parser.add_argument("output", help="Output file path")
-parser.add_argument("--max_channels", help="Maximum number of channels", type=int, default=16)
+parser.add_argument("--max_channels", help="Maximum number of channels used for computing cross-correlation",
+                    type=int, default=16)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
-parser.add_argument("--threshold_factor", help="Factor for the mean correlation peak MAD threshold",
+parser.add_argument("--correlation_threshold_factor", help="Scale factor of mean correlation peak MAD threshold",
                     type=float, default=8.0)
-parser.add_argument("--min_correlation_std", help="Minimum correlation std", type=float, default=0.25)
-parser.add_argument("--max_correlation_std", help="Maximum correlation std", type=float, default=1.5)
+parser.add_argument("--magnitude_threshold_factor", help="Scale factor of channel magnitude MAD threshold", type=float,
+                    default=2.0)
+parser.add_argument("--cc_min_std_factor", help="Scale factor of correlation std min threshold", type=float,
+                    default=0.25)
+parser.add_argument("--cc_max_std_factor", help="Scale factor of correlation std max threshold", type=float,
+                    default=1.5)
 parser.add_argument("--cc_filter_num_channels", help="Minimum number of channels with correlation above threshold",
                     type=int, default=6)
 parser.add_argument("--cc_filter_threshold", help="Correlation threshold per channels", type=float, default=0.35)
@@ -31,71 +36,47 @@ parser.add_argument("--sample_tolerance", help="Maximum lag in samples", type=in
 parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='ttimes')
 parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
 parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
-parser.add_argument("--continuous", help="Relative path to continuous traces directory", type=Path, default='24h')
 parser.add_argument("--loglevel", help="Log level", default='error')
-parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=os.cpu_count())
+parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=0)
 cli_args = parser.parse_args()
 
 logging.basicConfig(format='%(levelname)s: %(message)s',
                     level=getattr(logging, cli_args.loglevel.upper()))
 
+if cli_args.num_threads < 0:
+    MaybePoolExecutor = contextlib.nullcontext(enter_result=SimpleNamespace(map=map))
+elif cli_args.num_threads == 0:
+    MaybePoolExecutor = ThreadPoolExecutor(max_workers=os.cpu_count())
+else:
+    MaybePoolExecutor = ThreadPoolExecutor(max_workers=cli_args.num_threads)
+
 if __name__ == '__main__':
     tic = timer()
-    with ThreadPoolExecutor(max_workers=cli_args.num_threads) as executor:
-        day_stream = read_continuous_stream(cli_args.root / cli_args.continuous,
-                                            cli_args.date,
-                                            executor,
-                                            freqmin=cli_args.lowpass_freq,
-                                            freqmax=cli_args.highpass_freq)
-        templates = tqdm(read_templates(cli_args.root / cli_args.templates,
-                                        cli_args.root / cli_args.travel_times,
-                                        cli_args.root / cli_args.catalog,
-                                        cli_args.max_channels,
-                                        executor),
-                         total=len(os.listdir(cli_args.root / cli_args.travel_times)),
-                         disable=None)
+    data = read_continuous_stream(cli_args.root / cli_args.continuous,
+                                  freqmin=cli_args.lowpass_freq,
+                                  freqmax=cli_args.highpass_freq)
+    templates = tqdm(read_templates(cli_args.root / cli_args.templates,
+                                    cli_args.root / cli_args.travel_times,
+                                    cli_args.root / cli_args.catalog),
+                     total=len(os.listdir(cli_args.root / cli_args.travel_times)),
+                     disable=None)
+    with MaybePoolExecutor as executor:
         events = []
         for template_number, template_stream, travel_times, template_magnitude in templates:
             try:
-                detections = correlation_detector(template_stream,
-                                                  day_stream,
-                                                  travel_times,
-                                                  template_magnitude,
-                                                  cli_args.threshold_factor,
-                                                  cli_args.sample_tolerance,
-                                                  executor,
-                                                  (cli_args.min_correlation_std, cli_args.max_correlation_std))
-                for detection in detections:
-                    date, magnitude, correlation, stack_height, stack_dmad, channels = detection
-                    num_channels = sum(1 for _, cc, _ in channels if cc > cli_args.cc_filter_threshold)
-                    if num_channels >= cli_args.cc_filter_num_channels:
-                        record = (template_number, date.datetime, magnitude, correlation,
-                                  stack_height, stack_dmad, num_channels)
-                        events.append(record)
-                    else:
-                        logging.debug(f"Skipping detection at {date} for template {template_number}, "
-                                      f"not enough channels ({num_channels}) above threshold")
-            except ValueError as err:
-                logging.warning(f"{err} occurred during processing of "
-                                f"template {template_number}, {cli_args.date.strftime('%Y-%m-%d')}")
-
-    events_dataframe = pd.DataFrame.from_records(events,
-                                                 columns=['template', 'date', 'magnitude',
-                                                          'correlation', 'stack_height', 'stack_dmad',
-                                                          'num_channels'])
-    events_dataframe.sort_values(by=['template', 'date'], inplace=True)
-    events_dataframe['crt_pre'] = events_dataframe['stack_height'] / events_dataframe['stack_dmad']
-    events_dataframe['crt_post'] = events_dataframe['correlation'] / events_dataframe['stack_dmad']
-    logging.info(f"Writing outputs to {cli_args.output}")
-    events_dataframe.to_csv(cli_args.output,
-                            index=False,
-                            header=False,
-                            sep=' ',
-                            date_format='%Y-%m-%dT%H:%M:%S.%fZ',
-                            float_format='%.3f',
-                            columns=['template', 'date', 'magnitude',
-                                     'correlation', 'crt_post',
-                                     'stack_height', 'crt_pre',
-                                     'num_channels'])
+                detections = correlation_detector(template_stream, data, travel_times, template_magnitude,
+                                                  max_channels=cli_args.max_channels,
+                                                  cc_min_std_factor=cli_args.cc_min_std_factor,
+                                                  cc_max_std_factor=cli_args.cc_max_std_factor,
+                                                  threshold_factor=cli_args.correlation_threshold_factor,
+                                                  tolerance=cli_args.sample_tolerance,
+                                                  cc_threshold=cli_args.cc_filter_threshold,
+                                                  min_channels=cli_args.cc_filter_num_channels,
+                                                  magnitude_threshold=cli_args.magnitude_threshold_factor,
+                                                  mapf=executor.map)
+                events.extend((template_number,) + detection for detection in detections)
+            except ValueError as error:
+                logging.warning(f"{error} occurred during processing of template {template_number}")
+    save_records(events, cli_args.output)
     toc = timer()
     logging.info(f"Elapsed time: {toc - tic:.2f} seconds.")
