@@ -71,7 +71,7 @@ if __name__ == '__main__':
                                                   cc_min_std_factor=cli_args.cc_min_std_factor,
                                                   cc_max_std_factor=cli_args.cc_max_std_factor,
                                                   threshold_factor=cli_args.correlation_threshold_factor,
-                                                  distance_factor=cli_args.distance_factor,
+                                                  distance_factor=cli_args.correlation_distance_factor,
                                                   tolerance=cli_args.sample_tolerance,
                                                   cc_threshold=cli_args.cc_filter_threshold,
                                                   min_channels=cli_args.cc_filter_num_channels,

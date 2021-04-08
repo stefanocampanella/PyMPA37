@@ -35,39 +35,29 @@ def read_templates(templates_directory: Path, travel_times_directory: Path,
     template_magnitudes = pd.read_csv(catalog_filepath, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
     logging.info(f"Reading travel times from {travel_times_directory}")
     logging.info(f"Reading templates from {templates_directory}")
-    for template_number, travel_times_filepath in range_templates(travel_times_directory):
-        try:
-            travel_times = read_travel_times(travel_times_filepath)
-            filepath = templates_directory / f"{template_number}.mseed"
-            logging.debug(f"Reading {filepath}")
-            with filepath.open('rb') as file:
-                template_stream = read(file)
-                yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
-        except OSError as err:
-            logging.warning(f"{err} occurred while reading template {template_number}")
-            continue
-
-
-def range_templates(travel_times_directory: Path) -> Generator[Tuple[int, Path], None, None]:
     file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
-    for filepath in travel_times_directory.glob('*.ttimes'):
-        match = file_regex.match(filepath.name)
+    for travel_times_filepath in travel_times_directory.glob('*.ttimes'):
+        match = file_regex.match(travel_times_filepath.name)
         if match:
             template_number = int(match.group('template_number'))
-            yield template_number, filepath
-
-
-def read_travel_times(filepath: Path) -> Dict[str, float]:
-    travel_times = OrderedDict()
-    logging.debug(f"Reading {filepath}")
-    with open(filepath, "r") as file:
-        while line := file.readline():
-            key, value_string = line.split(' ')
-            network, station, channel = key.split('.')
-            trace_id = f"{network}.{station}..{channel}"
-            value = float(value_string)
-            travel_times[trace_id] = value
-    return travel_times
+            try:
+                logging.debug(f"Reading {travel_times_filepath}")
+                travel_times = OrderedDict()
+                with open(travel_times_filepath, "r") as file:
+                    while line := file.readline():
+                        key, value_string = line.split(' ')
+                        network, station, channel = key.split('.')
+                        trace_id = f"{network}.{station}..{channel}"
+                        value = float(value_string)
+                        travel_times[trace_id] = value
+                filepath = templates_directory / f"{template_number}.mseed"
+                logging.debug(f"Reading {filepath}")
+                with filepath.open('rb') as file:
+                    template_stream = read(file)
+                yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
+            except OSError as err:
+                logging.warning(f"{err} occurred while reading template {template_number}")
+                continue
 
 
 def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str, float], template_magnitude: float,
@@ -155,7 +145,7 @@ def quality_check(correlations: Stream, continuous: Stream, template: Stream, tr
     mean_std = bn.nanmean(correlation_stds)
     traces = zip(correlations, continuous, template, list(travel_times))
     for std, (xcor_trace, cont_trace, temp_trace, trace_id) in zip(correlation_stds, traces):
-        if not cc_min_std_factor < std / mean_std < cc_max_std_factor:
+        if not cc_min_std_factor <= std / mean_std <= cc_max_std_factor:
             logging.debug(f"Ignored trace {xcor_trace} with std {std} (mean: {mean_std})")
             correlations.remove(xcor_trace)
             continuous.remove(cont_trace)
