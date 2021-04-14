@@ -22,6 +22,7 @@ def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {path}")
     with path.open('rb') as file:
         data = read(file)
+        data.merge(fill_value=0.0)
         data.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
         starttime = min(trace.stats.starttime for trace in data)
         endtime = max(trace.stats.endtime for trace in data)
@@ -29,31 +30,32 @@ def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
         return data
 
 
-def read_templates(templates_directory: Path, travel_times_directory: Path,
-                   catalog_filepath: Path) -> Generator[TemplateReadTuple, None, None]:
-    logging.info(f"Reading catalog from {catalog_filepath}")
-    template_magnitudes = pd.read_csv(catalog_filepath, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
-    logging.info(f"Reading travel times from {travel_times_directory}")
+def read_templates(templates_directory: Path, ttimes_directory: Path,
+                   catalog_path: Path) -> Generator[TemplateReadTuple, None, None]:
+    logging.info(f"Reading catalog from {catalog_path}")
+    template_magnitudes = pd.read_csv(catalog_path, sep=r'\s+', usecols=(5,), squeeze=True, dtype=float)
+    logging.info(f"Reading travel times from {ttimes_directory}")
     logging.info(f"Reading templates from {templates_directory}")
     file_regex = re.compile(r'(?P<template_number>\d+).ttimes')
-    for travel_times_filepath in travel_times_directory.glob('*.ttimes'):
-        match = file_regex.match(travel_times_filepath.name)
+    for ttimes_path in ttimes_directory.glob('*.ttimes'):
+        match = file_regex.match(ttimes_path.name)
         if match:
             template_number = int(match.group('template_number'))
             try:
-                logging.debug(f"Reading {travel_times_filepath}")
+                logging.debug(f"Reading {ttimes_path}")
                 travel_times = OrderedDict()
-                with open(travel_times_filepath, "r") as file:
-                    while line := file.readline():
+                with open(ttimes_path, "r") as ttimes_file:
+                    while line := ttimes_file.readline():
                         key, value_string = line.split(' ')
                         network, station, channel = key.split('.')
                         trace_id = f"{network}.{station}..{channel}"
                         value = float(value_string)
                         travel_times[trace_id] = value
-                filepath = templates_directory / f"{template_number}.mseed"
-                logging.debug(f"Reading {filepath}")
-                with filepath.open('rb') as file:
-                    template_stream = read(file)
+                template_path = templates_directory / f"{template_number}.mseed"
+                logging.debug(f"Reading {template_path}")
+                with template_path.open('rb') as template_file:
+                    template_stream = read(template_file)
+                    template_stream.merge(fill_value=0.0)
                 yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
             except OSError as err:
                 logging.warning(f"{err} occurred while reading template {template_number}")
@@ -102,18 +104,19 @@ def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float
                                        {trace_id for trace_id in travel_times}),
                       key=lambda trace_id: travel_times[trace_id])[:max_channels]
     logging.debug(f"Traces used: {', '.join(channels)}")
-    sieved_data = select_traces(data, channels)
-    sieved_template = select_traces(template, channels)
+    sieved_data = select_channels(data, channels)
+    sieved_template = select_channels(template, channels)
     sieved_ttimes = OrderedDict([(trace_id, travel_times[trace_id]) for trace_id in channels])
     return sieved_data, sieved_template, sieved_ttimes
 
 
-def select_traces(stream: Stream, channels: Iterable[str]) -> Stream:
-    new_stream = Stream()
-    for trace_id in channels:
-        trace, = stream.select(id=trace_id)
-        new_stream.append(trace)
-    return new_stream
+def select_channels(stream: Stream, channels: Iterable[str]) -> Stream:
+    def select_channel(channel_id: str):
+        for trace in stream:
+            if channel_id == trace.id:
+                return trace
+
+    return Stream(traces=map(select_channel, channels))
 
 
 def correlate_traces(continuous: Trace, template: Trace):
@@ -140,7 +143,7 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
 
 
 def quality_check(correlations: Stream, continuous: Stream, template: Stream, travel_times: Dict[str, float],
-                  cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5, mapf: Callable = map):
+                  cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5, mapf: Callable = map) -> None:
     correlation_stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlations), dtype=float)
     mean_std = bn.nanmean(correlation_stds)
     traces = zip(correlations, continuous, template, list(travel_times))
