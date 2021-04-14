@@ -9,16 +9,19 @@ from time import perf_counter as timer
 from types import SimpleNamespace
 
 from tqdm import tqdm
+from psutil import cpu_count
 
 from pympa.pympa import read_templates, read_data, correlation_detector, save_records
 
 parser = argparse.ArgumentParser(prog="PyMPA37",
                                  description="A software package for phase match filtering")
-parser.add_argument("root", help="Working directory", type=Path, nargs='?', default=os.getcwd())
-parser.add_argument("continuous", help="Continuous data path", type=Path)
+parser.add_argument("data", help="Continuous data path", type=Path)
+parser.add_argument("travel_times", help="Path to travel times directory", type=Path)
+parser.add_argument("templates", help="Path to templates directory", type=Path)
+parser.add_argument("catalog", help="Path to event catalog", type=Path)
 parser.add_argument("output", help="Output file path")
-parser.add_argument("--max_channels", help="Maximum number of channels used for computing cross-correlation",
-                    type=int, default=16)
+parser.add_argument("--max_channels", help="Maximum number of channels used for computing cross-correlation", type=int,
+                    default=16)
 parser.add_argument("--lowpass_freq", help="Lowpass filter frequency", type=float, default=3.0)
 parser.add_argument("--highpass_freq", help="Highpass filter frequency", type=float, default=8.0)
 parser.add_argument("--correlation_threshold_factor", help="Scale factor of mean correlation peak threshold",
@@ -35,9 +38,6 @@ parser.add_argument("--cc_filter_num_channels", help="Minimum number of channels
                     type=int, default=6)
 parser.add_argument("--cc_filter_threshold", help="Correlation threshold per channels", type=float, default=0.35)
 parser.add_argument("--sample_tolerance", help="Maximum lag in samples", type=int, default=6)
-parser.add_argument("--travel_times", help="Relative path to travel times directory", type=Path, default='ttimes')
-parser.add_argument("--templates", help="Relative path to templates directory", type=Path, default='templates')
-parser.add_argument("--catalog", help="Relative path to event catalog", type=Path, default='templates.zmap')
 parser.add_argument("--loglevel", help="Log level", default='error')
 parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=0)
 cli_args = parser.parse_args()
@@ -48,25 +48,21 @@ logging.basicConfig(format='%(levelname)s: %(message)s',
 if cli_args.num_threads < 0:
     MaybePool = contextlib.nullcontext(enter_result=SimpleNamespace(map=map))
 elif cli_args.num_threads == 0:
-    MaybePool = Pool(max_workers=os.cpu_count())
+    MaybePool = Pool(max_workers=cpu_count(logical=False))
 else:
     MaybePool = Pool(max_workers=cli_args.num_threads)
 
 if __name__ == '__main__':
     tic = timer()
-    data = read_data(cli_args.root / cli_args.continuous,
-                     freqmin=cli_args.lowpass_freq,
-                     freqmax=cli_args.highpass_freq)
-    templates = tqdm(read_templates(cli_args.root / cli_args.templates,
-                                    cli_args.root / cli_args.travel_times,
-                                    cli_args.root / cli_args.catalog),
-                     total=len(os.listdir(cli_args.root / cli_args.travel_times)),
+    data = read_data(cli_args.data, freqmin=cli_args.lowpass_freq, freqmax=cli_args.highpass_freq)
+    templates = tqdm(read_templates(cli_args.templates, cli_args.travel_times, cli_args.catalog),
+                     total=len(list(cli_args.travel_times.glob('*.ttimes'))),
                      disable=None)
     with MaybePool as pool:
         events = []
         for template_number, template, travel_times, template_magnitude in templates:
             try:
-                detections = correlation_detector(template, data, travel_times, template_magnitude,
+                detections = correlation_detector(data, template, travel_times, template_magnitude,
                                                   max_channels=cli_args.max_channels,
                                                   cc_min_std_factor=cli_args.cc_min_std_factor,
                                                   cc_max_std_factor=cli_args.cc_max_std_factor,

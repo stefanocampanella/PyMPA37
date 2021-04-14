@@ -5,6 +5,7 @@
     <option name="PARENT_ENVS" value="true" />
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
+      <env name="PYTHONHASHSEED" value="42" />
     </envs>
     <option name="SDK_HOME" value="$USER_HOME$/.miniconda/envs/PyMPA37/bin/python" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/data/test" />
@@ -13,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/bin/pympa" />
-    <option name="PARAMETERS" value="24h/2010-07-23.mseed outputs.stats --max_channels=12 --loglevel=debug --num_threads=-1" />
+    <option name="PARAMETERS" value="24h/2010-07-23.mseed ttimes templates templates.zmap test.stats --max_channels=12" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="true" />
     <option name="MODULE_MODE" value="false" />

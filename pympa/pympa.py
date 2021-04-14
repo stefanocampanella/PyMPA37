@@ -22,12 +22,12 @@ def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {path}")
     with path.open('rb') as file:
         data = read(file)
-        data.merge(fill_value=0.0)
-        data.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
-        starttime = min(trace.stats.starttime for trace in data)
-        endtime = max(trace.stats.endtime for trace in data)
-        data.trim(starttime=starttime, endtime=endtime, pad=True, fill_value=0)
-        return data
+    data.merge(fill_value=0.0)
+    data.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
+    starttime = min(trace.stats.starttime for trace in data)
+    endtime = max(trace.stats.endtime for trace in data)
+    data.trim(starttime=starttime, endtime=endtime, pad=True, fill_value=0)
+    return data
 
 
 def read_templates(templates_directory: Path, ttimes_directory: Path,
@@ -55,39 +55,39 @@ def read_templates(templates_directory: Path, ttimes_directory: Path,
                 logging.debug(f"Reading {template_path}")
                 with template_path.open('rb') as template_file:
                     template_stream = read(template_file)
-                    template_stream.merge(fill_value=0.0)
+                template_stream.merge(fill_value=0.0)
                 yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
             except OSError as err:
                 logging.warning(f"{err} occurred while reading template {template_number}")
                 continue
 
 
-def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str, float], template_magnitude: float,
+def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_times: Dict[str, float],
+                         template_magnitude: float,
                          max_channels: int = 16, threshold_factor: float = 8.0, distance_factor: float = 2.0,
                          tolerance: int = 6, cc_threshold: float = 0.35, min_channels: int = 6,
                          magnitude_threshold: float = 2.0, cc_min_std_factor: float = 0.25,
                          cc_max_std_factor: float = 1.5, mapf: Callable = map) -> Generator[Event, None, None]:
-    continuous, template, travel_times = sieve_and_sort(data, template, travel_times, max_channels)
-    correlations = Stream(traces=mapf(correlate_traces, continuous, template))
-    quality_check(correlations, continuous, template, travel_times, cc_min_std_factor=cc_min_std_factor,
-                  cc_max_std_factor=cc_max_std_factor, mapf=mapf)
-    stacked_stream = Stream(traces=mapf(align, correlations, travel_times.values()))
-    mean_correlation = bn.nanmean([trace.data for trace in stacked_stream], axis=0)
+    data, template, travel_times = intersect(whole_data, whole_template, all_travel_times, max_channels)
+    correlations = Stream(traces=mapf(correlate_trace, data, template, travel_times.values()))
+    quality_check(correlations, data, template, travel_times, cc_min_std_factor=cc_min_std_factor,
+                  cc_max_std_factor=cc_max_std_factor, mapf=mapf),
+    mean_correlation = bn.nanmean([trace.data for trace in correlations], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
-    distance = distance_factor * (template[0].stats.endtime - template[0].stats.starttime) / template[0].stats.delta
+    distance = int(distance_factor * sum(trace.stats.npts for trace in template) / len(template))
     peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
-    stack_zero = min(trace.stats.starttime for trace in stacked_stream)
-    stack_delta = stacked_stream[0].stats.delta
+    stack_zero = min(trace.stats.starttime for trace in correlations)
+    stack_delta = sum(trace.stats.delta for trace in correlations) / len(correlations)
     travel_zero = min(travel_times.values())
     template_zero = min(trace.stats.starttime for trace in template)
     for peak, peak_height in zip(peaks, properties['peak_heights']):
         trigger_time = stack_zero + peak * stack_delta
         event_date = trigger_time + travel_zero
-        channels = list(mapf(fix_correlation, stacked_stream, repeat(peak), repeat(tolerance)))
+        channels = list(mapf(fix_correlation, correlations, repeat(peak), repeat(tolerance)))
         num_channels = sum(1 for _, corr, _ in channels if corr > cc_threshold)
         if num_channels >= min_channels:
-            channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), continuous,
+            channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), data,
                                                   repeat(trigger_time - template_zero)), dtype=float)
             event_magnitude = estimate_magnitude(channel_magnitudes, magnitude_threshold)
             event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
@@ -97,35 +97,40 @@ def correlation_detector(template: Stream, data: Stream, travel_times: Dict[str,
                           f"only {num_channels} channel(s) above threshold")
 
 
-def sieve_and_sort(data: Stream, template: Stream, travel_times: Dict[str, float],
-                   max_channels: int) -> Tuple[Stream, Stream, Dict[str, float]]:
-    channels = sorted(set.intersection({trace.id for trace in data},
-                                       {trace.id for trace in template},
-                                       {trace_id for trace_id in travel_times}),
-                      key=lambda trace_id: travel_times[trace_id])[:max_channels]
-    logging.debug(f"Traces used: {', '.join(channels)}")
-    sieved_data = select_channels(data, channels)
-    sieved_template = select_channels(template, channels)
-    sieved_ttimes = OrderedDict([(trace_id, travel_times[trace_id]) for trace_id in channels])
-    return sieved_data, sieved_template, sieved_ttimes
+def intersect(data: Stream, template: Stream, travel_times: Dict[str, float],
+              max_channels: int) -> Tuple[Stream, Stream, Dict[str, float]]:
+    trace_ids = sorted(set.intersection({trace.id for trace in data},
+                                        {trace.id for trace in template},
+                                        set(travel_times)),
+                       key=lambda trace_id: travel_times[trace_id])[:max_channels]
+    logging.debug(f"Traces used: {', '.join(trace_ids)}")
+    data = select_traces(data, trace_ids)
+    template = select_traces(template, trace_ids)
+    travel_times = OrderedDict([(trace_id, travel_times[trace_id]) for trace_id in trace_ids])
+    return data, template, travel_times
 
 
-def select_channels(stream: Stream, channels: Iterable[str]) -> Stream:
-    def select_channel(channel_id: str):
+def select_traces(stream: Stream, trace_ids: Iterable[str]) -> Stream:
+    def safe_select(trace_id: str):
         for trace in stream:
-            if channel_id == trace.id:
+            if trace_id == trace.id:
                 return trace
+    return Stream(traces=map(safe_select, trace_ids))
 
-    return Stream(traces=map(select_channel, channels))
 
-
-def correlate_traces(continuous: Trace, template: Trace):
+def correlate_trace(continuous: Trace, template: Trace, delay: float) -> Trace:
     header = {"network": continuous.stats.network,
               "station": continuous.stats.station,
               "channel": continuous.stats.channel,
               "starttime": continuous.stats.starttime,
               "sampling_rate": continuous.stats.sampling_rate}
-    return Trace(data=correlate_data(continuous.data, template.data), header=header)
+    trace = Trace(data=correlate_data(continuous.data, template.data), header=header)
+
+    duration = continuous.stats.endtime - continuous.stats.starttime
+    starttime = trace.stats.starttime + delay
+    endtime = starttime + duration
+    trace.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
+    return trace
 
 
 def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
@@ -154,14 +159,6 @@ def quality_check(correlations: Stream, continuous: Stream, template: Stream, tr
             continuous.remove(cont_trace)
             template.remove(temp_trace)
             del travel_times[trace_id]
-
-
-def align(trace: Trace, delay: float):
-    trace_copy = trace.copy()
-    starttime = trace_copy.stats.starttime + delay
-    endtime = starttime + datetime.timedelta(days=1)
-    trace_copy.trim(starttime=starttime, endtime=endtime, nearest_sample=True, pad=True, fill_value=0)
-    return trace_copy
 
 
 def fix_correlation(trace: Trace, trigger_sample: int, tolerance: int) -> CorrelationFix:
