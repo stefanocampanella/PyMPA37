@@ -2,14 +2,13 @@
 import argparse
 import contextlib
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor as Pool
 from pathlib import Path
 from time import perf_counter as timer
 from types import SimpleNamespace
 
-from tqdm import tqdm
 from psutil import cpu_count
+from tqdm import tqdm
 
 from pympa.pympa import read_templates, read_data, correlation_detector, save_records
 
