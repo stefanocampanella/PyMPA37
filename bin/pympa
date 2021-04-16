@@ -71,7 +71,7 @@ if __name__ == '__main__':
                                                   cc_threshold=cli_args.cc_filter_threshold,
                                                   min_channels=cli_args.cc_filter_num_channels,
                                                   magnitude_threshold=cli_args.magnitude_threshold_factor,
-                                                  mapf=pool.map)
+                                                  executor=pool)
                 events.extend((template_number,) + detection for detection in detections)
             except ValueError as error:
                 logging.warning(f"{error} occurred during processing of template {template_number}")

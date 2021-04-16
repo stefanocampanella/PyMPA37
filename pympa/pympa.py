@@ -2,7 +2,7 @@ import datetime
 import logging
 import re
 from collections import OrderedDict
-from itertools import repeat
+from concurrent.futures import Executor, Future
 from math import log10
 from pathlib import Path
 from typing import Tuple, Dict, List, Generator, Iterable, Callable
@@ -18,11 +18,24 @@ CorrelationFix = Tuple[str, float, int]
 Event = Tuple[int, datetime.datetime, float, float, float, float, int]
 
 
+class DummyExecutor(Executor):
+
+    def submit(self, fn, *args, **kwargs):
+        f = Future()
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as e:
+            f.set_exception(e)
+        else:
+            f.set_result(result)
+
+        return f
+
+
 def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {path}")
     with path.open('rb') as file:
         data = read(file)
-    data.merge(fill_value=0.0)
     data.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
     starttime = min(trace.stats.starttime for trace in data)
     endtime = max(trace.stats.endtime for trace in data)
@@ -55,7 +68,6 @@ def read_templates(templates_directory: Path, ttimes_directory: Path,
                 logging.debug(f"Reading {template_path}")
                 with template_path.open('rb') as template_file:
                     template_stream = read(template_file)
-                template_stream.merge(fill_value=0.0)
                 yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
             except OSError as err:
                 logging.warning(f"{err} occurred while reading template {template_number}")
@@ -67,11 +79,11 @@ def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_
                          max_channels: int = 16, threshold_factor: float = 8.0, distance_factor: float = 2.0,
                          tolerance: int = 6, cc_threshold: float = 0.35, min_channels: int = 6,
                          magnitude_threshold: float = 2.0, cc_min_std_factor: float = 0.25,
-                         cc_max_std_factor: float = 1.5, mapf: Callable = map) -> Generator[Event, None, None]:
+                         cc_max_std_factor: float = 1.5, executor: Executor = DummyExecutor) -> Generator[Event, None, None]:
     correlations, data, template, travel_times = preprocess(whole_data, whole_template, all_travel_times,
                                                             max_channels=max_channels,
                                                             cc_min_std_factor=cc_min_std_factor,
-                                                            cc_max_std_factor=cc_max_std_factor, mapf=mapf)
+                                                            cc_max_std_factor=cc_max_std_factor, mapf=executor.map)
 
     mean_correlation = bn.nanmean([trace.data for trace in correlations], axis=0)
     correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
@@ -80,7 +92,7 @@ def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_
     peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
     return postprocess(zip(peaks, properties['peak_heights']), correlations, data, template, travel_times,
                        template_magnitude, correlation_dmad, tolerance=tolerance, cc_threshold=cc_threshold,
-                       min_channels=min_channels, magnitude_threshold=magnitude_threshold, mapf=mapf)
+                       min_channels=min_channels, magnitude_threshold=magnitude_threshold, executor=executor)
 
 
 def preprocess(whole_data: Stream, whole_template: Stream, all_travel_times: Dict[str, float],
@@ -155,7 +167,7 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
 def postprocess(peaks, correlations: Stream, data: Stream, template: Stream, travel_times: Dict[str, float],
                 template_magnitude: float, correlation_dmad: float, tolerance: int = 6,
                 cc_threshold: float = 0.35, min_channels: int = 6, magnitude_threshold: float = 2.0,
-                mapf: Callable = map) -> Generator[Event, None, None]:
+                executor: Executor = DummyExecutor) -> Generator[Event, None, None]:
     correlations_starttime = min(trace.stats.starttime for trace in correlations)
     correlation_delta = sum(trace.stats.delta for trace in correlations) / len(correlations)
     travel_starttime = min(travel_times.values())
@@ -163,12 +175,11 @@ def postprocess(peaks, correlations: Stream, data: Stream, template: Stream, tra
     for peak, peak_height in peaks:
         trigger_time = correlations_starttime + peak * correlation_delta
         event_date = trigger_time + travel_starttime
-        channels = list(mapf(fix_correlation, correlations, repeat(peak), repeat(tolerance)))
+        channels = [fix_correlation(trace, peak, tolerance) for trace in correlations]
         num_channels = sum(1 for _, corr, _ in channels if corr > cc_threshold)
         if num_channels >= min_channels:
-            channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), data,
-                                                  repeat(trigger_time - template_starttime)), dtype=float)
-            event_magnitude = estimate_magnitude(channel_magnitudes, magnitude_threshold)
+            event_magnitude = estimate_magnitude(data, template, template_magnitude, trigger_time - template_starttime,
+                                                 threshold_factor=magnitude_threshold)
             event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
             yield event_date.datetime, event_magnitude, event_correlation, peak_height, correlation_dmad, num_channels
         else:
@@ -184,18 +195,29 @@ def fix_correlation(trace: Trace, trigger_sample: int, tolerance: int) -> Correl
     return trace.id, correlation, sample_shift
 
 
-def magnitude(template_trace: Trace, template_magnitude: float, continuous_trace: Trace,
-              delta: datetime.timedelta) -> float:
-    starttime = template_trace.stats.starttime + delta
-    endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
-    continuous_trace_view = continuous_trace.slice(starttime=starttime, endtime=endtime)
-    continuous_max_amp = bn.nanmax(np.abs(continuous_trace_view.data))
-    template_max_amp = bn.nanmax(np.abs(template_trace.data))
-    event_magnitude = template_magnitude - log10(template_max_amp / continuous_max_amp)
-    return event_magnitude
+# def magnitude(template_trace: Trace, template_magnitude: float, continuous_trace: Trace,
+#               delta: datetime.timedelta) -> float:
+#     starttime = template_trace.stats.starttime + delta
+#     endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
+#     continuous_trace_view = continuous_trace.slice(starttime=starttime, endtime=endtime)
+#     continuous_max_amp = bn.nanmax(np.abs(continuous_trace_view.data))
+#     template_max_amp = bn.nanmax(np.abs(template_trace.data))
+#     event_magnitude = template_magnitude - log10(template_max_amp / continuous_max_amp)
+#     return event_magnitude
 
 
-def estimate_magnitude(channel_magnitudes: np.ndarray, threshold_factor: float) -> float:
+def estimate_magnitude(data: Stream, template: Stream, template_magnitude: float, delta: datetime.timedelta,
+                       threshold_factor: float) -> float:
+    channel_magnitudes = []
+    for template_trace, data_trace in zip(template, data):
+        starttime = template_trace.stats.starttime + delta
+        endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
+        continuous_trace_view = data_trace.slice(starttime=starttime, endtime=endtime)
+        continuous_max_amp = bn.nanmax(np.abs(continuous_trace_view.data))
+        template_max_amp = bn.nanmax(np.abs(template_trace.data))
+        channel_magnitudes.append(template_magnitude - log10(template_max_amp / continuous_max_amp))
+    channel_magnitudes = np.asarray(channel_magnitudes)
+
     magnitude_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
     magnitude_mad = bn.median(magnitude_deviations)
     threshold = threshold_factor * magnitude_mad + np.finfo(magnitude_mad).eps
