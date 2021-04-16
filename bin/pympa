@@ -1,13 +1,10 @@
 #! /usr/bin/env python
 import argparse
-import contextlib
 import logging
-from concurrent.futures import ThreadPoolExecutor as Pool
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter as timer
-from types import SimpleNamespace
 
-from psutil import cpu_count
 from tqdm import tqdm
 
 from pympa.pympa import read_templates, read_data, correlation_detector, save_records
@@ -44,37 +41,30 @@ cli_args = parser.parse_args()
 logging.basicConfig(format='%(levelname)s: %(message)s',
                     level=getattr(logging, cli_args.loglevel.upper()))
 
-if cli_args.num_threads < 0:
-    MaybePool = contextlib.nullcontext(enter_result=SimpleNamespace(map=map))
-elif cli_args.num_threads == 0:
-    MaybePool = Pool(max_workers=cpu_count(logical=False))
-else:
-    MaybePool = Pool(max_workers=cli_args.num_threads)
-
 if __name__ == '__main__':
     tic = timer()
     data = read_data(cli_args.data, freqmin=cli_args.lowpass_freq, freqmax=cli_args.highpass_freq)
     templates = tqdm(read_templates(cli_args.templates, cli_args.travel_times, cli_args.catalog),
                      total=len(list(cli_args.travel_times.glob('*.ttimes'))),
                      disable=None)
-    with MaybePool as pool:
+    max_workers = cli_args.num_threads if cli_args.num_threads > 0 else None
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         events = []
-        for template_number, template, travel_times, template_magnitude in templates:
+        for template_number, template_stream, travel_times, template_magnitude in templates:
             try:
-                detections = correlation_detector(data, template, travel_times, template_magnitude,
+                detections = correlation_detector(data, template_stream, travel_times, template_magnitude,
                                                   max_channels=cli_args.max_channels,
                                                   cc_min_std_factor=cli_args.cc_min_std_factor,
                                                   cc_max_std_factor=cli_args.cc_max_std_factor,
                                                   threshold_factor=cli_args.correlation_threshold_factor,
                                                   distance_factor=cli_args.correlation_distance_factor,
                                                   tolerance=cli_args.sample_tolerance,
-                                                  cc_threshold=cli_args.cc_filter_threshold,
-                                                  min_channels=cli_args.cc_filter_num_channels,
                                                   magnitude_threshold=cli_args.magnitude_threshold_factor,
-                                                  executor=pool)
+                                                  mapf=pool.map)
                 events.extend((template_number,) + detection for detection in detections)
             except ValueError as error:
                 logging.warning(f"{error} occurred during processing of template {template_number}")
-    save_records(events, cli_args.output)
+    save_records(events, cli_args.output, cc_threshold=cli_args.cc_filter_threshold,
+                 min_channels=cli_args.cc_filter_num_channels)
     toc = timer()
     logging.info(f"Elapsed time: {toc - tic:.2f} seconds.")
