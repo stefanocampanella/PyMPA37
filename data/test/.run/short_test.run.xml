@@ -5,7 +5,6 @@
     <option name="PARENT_ENVS" value="true" />
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
-      <env name="PYTHONHASHSEED" value="42" />
     </envs>
     <option name="SDK_HOME" value="$USER_HOME$/.miniconda/envs/PyMPA37/bin/python" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/data/test" />

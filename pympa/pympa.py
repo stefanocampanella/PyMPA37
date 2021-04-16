@@ -68,6 +68,24 @@ def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_
                          tolerance: int = 6, cc_threshold: float = 0.35, min_channels: int = 6,
                          magnitude_threshold: float = 2.0, cc_min_std_factor: float = 0.25,
                          cc_max_std_factor: float = 1.5, mapf: Callable = map) -> Generator[Event, None, None]:
+    correlations, data, template, travel_times = preprocess(whole_data, whole_template, all_travel_times,
+                                                            max_channels=max_channels,
+                                                            cc_min_std_factor=cc_min_std_factor,
+                                                            cc_max_std_factor=cc_max_std_factor, mapf=mapf)
+
+    mean_correlation = bn.nanmean([trace.data for trace in correlations], axis=0)
+    correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
+    threshold = threshold_factor * correlation_dmad
+    distance = int(distance_factor * sum(trace.stats.npts for trace in template) / len(template))
+    peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
+    return postprocess(zip(peaks, properties['peak_heights']), correlations, data, template, travel_times,
+                       template_magnitude, correlation_dmad, tolerance=tolerance, cc_threshold=cc_threshold,
+                       min_channels=min_channels, magnitude_threshold=magnitude_threshold, mapf=mapf)
+
+
+def preprocess(whole_data: Stream, whole_template: Stream, all_travel_times: Dict[str, float],
+               max_channels: int = 16, cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5,
+               mapf: Callable = map) -> Tuple[Stream, Stream, Stream, Dict[str, float]]:
     data, template, travel_times = match_traces(whole_data, whole_template, all_travel_times, max_channels)
     correlations = Stream(traces=mapf(correlate_trace, data, template, travel_times.values()))
     stds = np.fromiter(mapf(lambda trace: bn.nanstd(np.abs(trace.data)), correlations), dtype=float)
@@ -80,29 +98,7 @@ def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_
             data.remove(cont_trace)
             template.remove(temp_trace)
             del travel_times[trace_id]
-    mean_correlation = bn.nanmean([trace.data for trace in correlations], axis=0)
-    correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
-    threshold = threshold_factor * correlation_dmad
-    distance = int(distance_factor * sum(trace.stats.npts for trace in template) / len(template))
-    peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
-    stack_zero = min(trace.stats.starttime for trace in correlations)
-    stack_delta = sum(trace.stats.delta for trace in correlations) / len(correlations)
-    travel_zero = min(travel_times.values())
-    template_zero = min(trace.stats.starttime for trace in template)
-    for peak, peak_height in zip(peaks, properties['peak_heights']):
-        trigger_time = stack_zero + peak * stack_delta
-        event_date = trigger_time + travel_zero
-        channels = list(mapf(fix_correlation, correlations, repeat(peak), repeat(tolerance)))
-        num_channels = sum(1 for _, corr, _ in channels if corr > cc_threshold)
-        if num_channels >= min_channels:
-            channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), data,
-                                                  repeat(trigger_time - template_zero)), dtype=float)
-            event_magnitude = estimate_magnitude(channel_magnitudes, magnitude_threshold)
-            event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
-            yield event_date.datetime, event_magnitude, event_correlation, peak_height, correlation_dmad, num_channels
-        else:
-            logging.debug(f"Skipping detection at {event_date} with peak {peak_height}: "
-                          f"only {num_channels} channel(s) above threshold")
+    return correlations, data, template, travel_times
 
 
 def match_traces(data: Stream, template: Stream, travel_times: Dict[str, float],
@@ -110,7 +106,7 @@ def match_traces(data: Stream, template: Stream, travel_times: Dict[str, float],
     trace_ids = sorted(set.intersection({trace.id for trace in data},
                                         {trace.id for trace in template},
                                         set(travel_times)),
-                       key=lambda trace_id: travel_times[trace_id])[:max_channels]
+                       key=lambda trace_id: (travel_times[trace_id], trace_id[-1]))[:max_channels]
     logging.debug(f"Traces used: {', '.join(trace_ids)}")
     data = select_traces(data, trace_ids)
     template = select_traces(template, trace_ids)
@@ -123,6 +119,7 @@ def select_traces(stream: Stream, trace_ids: Iterable[str]) -> Stream:
         for trace in stream:
             if trace_id == trace.id:
                 return trace
+
     return Stream(traces=map(safe_select, trace_ids))
 
 
@@ -153,6 +150,30 @@ def correlate_data(data: np.ndarray, template: np.ndarray) -> np.ndarray:
     np.divide(cross_correlation, norm, where=mask, out=cross_correlation)
     cross_correlation[~mask] = 0
     return cross_correlation
+
+
+def postprocess(peaks, correlations: Stream, data: Stream, template: Stream, travel_times: Dict[str, float],
+                template_magnitude: float, correlation_dmad: float, tolerance: int = 6,
+                cc_threshold: float = 0.35, min_channels: int = 6, magnitude_threshold: float = 2.0,
+                mapf: Callable = map) -> Generator[Event, None, None]:
+    correlations_starttime = min(trace.stats.starttime for trace in correlations)
+    correlation_delta = sum(trace.stats.delta for trace in correlations) / len(correlations)
+    travel_starttime = min(travel_times.values())
+    template_starttime = min(trace.stats.starttime for trace in template)
+    for peak, peak_height in peaks:
+        trigger_time = correlations_starttime + peak * correlation_delta
+        event_date = trigger_time + travel_starttime
+        channels = list(mapf(fix_correlation, correlations, repeat(peak), repeat(tolerance)))
+        num_channels = sum(1 for _, corr, _ in channels if corr > cc_threshold)
+        if num_channels >= min_channels:
+            channel_magnitudes = np.fromiter(mapf(magnitude, template, repeat(template_magnitude), data,
+                                                  repeat(trigger_time - template_starttime)), dtype=float)
+            event_magnitude = estimate_magnitude(channel_magnitudes, magnitude_threshold)
+            event_correlation = sum(corr for _, corr, _ in channels) / len(channels)
+            yield event_date.datetime, event_magnitude, event_correlation, peak_height, correlation_dmad, num_channels
+        else:
+            logging.debug(f"Skipping detection at {event_date} with peak {peak_height}: "
+                          f"only {num_channels} channel(s) above threshold")
 
 
 def fix_correlation(trace: Trace, trigger_sample: int, tolerance: int) -> CorrelationFix:
