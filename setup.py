@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="pympa",
-    version="0.0.1.dev0",
+    version="0.1",
     author="Alessandro Vuan, Stefano Campanella",
     author_email="avuan@inogs.it, scampanella@inogs.it",
     description="A software package for phase match filtering",

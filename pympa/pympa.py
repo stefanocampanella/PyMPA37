@@ -60,11 +60,9 @@ def read_templates(templates_directory: Path, ttimes_directory: Path,
 
 
 def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_times: Dict[str, float],
-                         template_magnitude: float,
-                         max_channels: int = 16, threshold_factor: float = 8.0, distance_factor: float = 2.0,
-                         tolerance: int = 6,
-                         magnitude_threshold: float = 2.0, cc_min_std_factor: float = 0.25,
-                         cc_max_std_factor: float = 1.5,
+                         template_magnitude: float, max_channels: int = 16, threshold_factor: float = 8.0,
+                         distance_factor: float = 2.0, tolerance: int = 6, magnitude_threshold: float = 2.0,
+                         cc_min_std_factor: float = 0.25, cc_max_std_factor: float = 1.5,
                          mapf: Callable = map) -> Generator[Event, None, None]:
     correlations, data, template, travel_times = preprocess(whole_data, whole_template, all_travel_times,
                                                             max_channels=max_channels,
