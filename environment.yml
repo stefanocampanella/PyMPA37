@@ -9,7 +9,9 @@ dependencies:
   - scipy
   - pandas
   - matplotlib
-  - obspy
   - bottleneck
   - jupyterlab
   - tqdm
+  - psutil
+  - pip:
+    - obspy
