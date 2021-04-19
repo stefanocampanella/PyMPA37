@@ -8,8 +8,6 @@ dependencies:
   - scipy
   - pandas
   - matplotlib
-  - dask
-  - distributed
   - obspy
   - bottleneck
   - jupyterlab

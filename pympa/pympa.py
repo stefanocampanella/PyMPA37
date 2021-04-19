@@ -14,13 +14,13 @@ from scipy.signal import find_peaks
 
 TemplateReadTuple = Tuple[int, Stream, Dict[str, int], float]
 CorrelationFix = Tuple[str, float, int]
-Event = Tuple[int, datetime.datetime, float, float, float, float, int]
+Event = Tuple[int, datetime.datetime, float, float, float, float, List[CorrelationFix]]
 
 
 def read_data(path: Path, freqmin: float = 3.0, freqmax: float = 8.0) -> Stream:
     logging.info(f"Reading continuous data from {path}")
     with path.open('rb') as file:
-        data = read(file)
+        data = read(file, dtype=np.float32)
     data.filter("bandpass", freqmin=freqmin, freqmax=freqmax, zerophase=True)
     starttime = min(trace.stats.starttime for trace in data)
     endtime = max(trace.stats.endtime for trace in data)
@@ -52,7 +52,7 @@ def read_templates(templates_directory: Path, ttimes_directory: Path,
                 template_path = templates_directory / f"{template_number}.mseed"
                 logging.debug(f"Reading {template_path}")
                 with template_path.open('rb') as template_file:
-                    template_stream = read(template_file)
+                    template_stream = read(template_file, dtype=np.float32)
                 yield template_number, template_stream, travel_times, template_magnitudes.iloc[template_number - 1]
             except OSError as err:
                 logging.warning(f"{err} occurred while reading template {template_number}")
@@ -69,7 +69,7 @@ def correlation_detector(whole_data: Stream, whole_template: Stream, all_travel_
                                                             cc_min_std_factor=cc_min_std_factor,
                                                             cc_max_std_factor=cc_max_std_factor, mapf=mapf)
     mean_correlation = bn.nanmean([trace.data for trace in correlations], axis=0)
-    correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.median(mean_correlation)))
+    correlation_dmad = bn.nanmean(np.abs(mean_correlation - bn.nanmedian(mean_correlation)))
     threshold = threshold_factor * correlation_dmad
     distance = int(distance_factor * sum(trace.stats.npts for trace in template) / len(template))
     peaks, properties = find_peaks(mean_correlation, height=threshold, distance=distance)
@@ -174,20 +174,23 @@ def fix_correlation(trace: Trace, trigger_sample: int, tolerance: int) -> Correl
 
 def estimate_magnitude(data: Stream, template: Stream, template_magnitude: float, delta: datetime.timedelta,
                        threshold_factor: float) -> float:
-    channel_magnitudes = []
+    channels_magnitude = []
     for template_trace, data_trace in zip(template, data):
         starttime = template_trace.stats.starttime + delta
         endtime = starttime + (template_trace.stats.endtime - template_trace.stats.starttime)
         continuous_trace_view = data_trace.slice(starttime=starttime, endtime=endtime)
         continuous_max_amp = bn.nanmax(np.abs(continuous_trace_view.data))
         template_max_amp = bn.nanmax(np.abs(template_trace.data))
-        channel_magnitudes.append(template_magnitude - log10(template_max_amp / continuous_max_amp))
-    channel_magnitudes = np.asarray(channel_magnitudes)
-
-    magnitude_deviations = np.abs(channel_magnitudes - bn.median(channel_magnitudes))
-    magnitude_mad = bn.median(magnitude_deviations)
+        if template_max_amp > 0 and continuous_max_amp > 0:
+            channel_magnitude = template_magnitude - log10(template_max_amp / continuous_max_amp)
+        else:
+            channel_magnitude = np.nan
+        channels_magnitude.append(channel_magnitude)
+    channels_magnitude = np.asarray(channels_magnitude)
+    magnitude_deviations = np.abs(channels_magnitude - bn.nanmedian(channels_magnitude))
+    magnitude_mad = bn.nanmedian(magnitude_deviations)
     threshold = threshold_factor * magnitude_mad + np.finfo(magnitude_mad).eps
-    return bn.nanmean(channel_magnitudes[magnitude_deviations < threshold])
+    return bn.nanmean(channels_magnitude[magnitude_deviations < threshold])
 
 
 def save_records(events: List[Event], output: Path, cc_threshold: float = 0.35, min_channels: int = 6) -> None:

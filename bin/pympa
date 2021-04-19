@@ -39,8 +39,7 @@ parser.add_argument("--loglevel", help="Log level", default='error')
 parser.add_argument("--num_threads", help="Number of threads to use", type=int, default=0)
 cli_args = parser.parse_args()
 
-logging.basicConfig(format='%(levelname)s: %(message)s',
-                    level=getattr(logging, cli_args.loglevel.upper()))
+logging.basicConfig(format='%(asctime)s-%(levelname)s: %(message)s', level=getattr(logging, cli_args.loglevel.upper()))
 
 if __name__ == '__main__':
     tic = timer()
@@ -63,7 +62,7 @@ if __name__ == '__main__':
                                                   magnitude_threshold=cli_args.magnitude_threshold_factor,
                                                   mapf=pool.map)
                 events.extend((template_number,) + detection for detection in detections)
-            except ValueError as error:
+            except BaseException as error:
                 logging.warning(f"{error} occurred during processing of template {template_number}")
     save_records(events, cli_args.output, cc_threshold=cli_args.cc_filter_threshold,
                  min_channels=cli_args.cc_filter_num_channels)
