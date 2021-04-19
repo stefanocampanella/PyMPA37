@@ -1,6 +1,7 @@
 name: PyMPA37
 channels:
   - conda-forge
+  - defaults
 dependencies:
   - python
   - pip
